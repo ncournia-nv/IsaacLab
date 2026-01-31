@@ -140,79 +140,12 @@ class SimulationContext:
         # SimulationManager._clear()
         self._apply_physics_settings()
 
-        # note: we read this once since it is not expected to change during runtime
-        # read flag for whether a local GUI is enabled
-        self._local_gui = (
-            self.settings.get("/app/window/enabled") if self.settings.get("/app/window/enabled") is not None else False
-        )
-        # read flag for whether livestreaming GUI is enabled
-        self._livestream_gui = (
-            self.settings.get("/app/livestream/enabled")
-            if self.settings.get("/app/livestream/enabled") is not None
-            else False
-        )
-        # read flag for whether XR GUI is enabled
-        self._xr_gui = (
-            self.settings.get("/app/xr/enabled") if self.settings.get("/app/xr/enabled") is not None else False
-        )
-
-        # read flag for whether the Isaac Lab viewport capture pipeline will be used,
-        # casting None to False if the flag doesn't exist
-        # this flag is set from the AppLauncher class
-        self._offscreen_render = bool(self.settings.get("/isaaclab/render/offscreen"))
-        # read flag for whether the default viewport should be enabled
-        self._render_viewport = bool(self.settings.get("/isaaclab/render/active_viewport"))
-        # flag for whether any GUI will be rendered (local, livestreamed or viewport)
-        self._has_gui = self._local_gui or self._livestream_gui or self._xr_gui
-
         # apply render settings from render config
         self._apply_render_settings_from_cfg()
 
-        # store the default render mode
-        if not self._has_gui and not self._offscreen_render:
-            # set default render mode
-            # note: this is the terminal state: cannot exit from this render mode
-            self.render_mode = self._visualizer_interface.RenderMode.NO_GUI_OR_RENDERING
-            # set viewport context to None
-            self._viewport_context = None
-            self._viewport_window = None
-        elif not self._has_gui and self._offscreen_render:
-            # set default render mode
-            # note: this is the terminal state: cannot exit from this render mode
-            self.render_mode = self._visualizer_interface.RenderMode.PARTIAL_RENDERING
-            # set viewport context to None
-            self._viewport_context = None
-            self._viewport_window = None
-        else:
-            # note: need to import here in case the UI is not available (ex. headless mode)
-            import omni.ui as ui
-            from omni.kit.viewport.utility import get_active_viewport
-
-            # set default render mode
-            # note: this can be changed by calling the `set_render_mode` function
-            self.render_mode = self._visualizer_interface.RenderMode.FULL_RENDERING
-            # acquire viewport context
-            self._viewport_context = get_active_viewport()
-            self._viewport_context.updates_enabled = True  # pyright: ignore [reportOptionalMemberAccess]
-            # acquire viewport window
-            # TODO @mayank: Why not just use get_active_viewport_and_window() directly?
-            self._viewport_window = ui.Workspace.get_window("Viewport")
-            # counter for periodic rendering
-            self._render_throttle_counter = 0
-            # rendering frequency in terms of number of render calls
-            self._render_throttle_period = 5
-
-        # check the case where we don't need to render the viewport
-        # since render_viewport can only be False in headless mode, we only need to check for offscreen_render
-        if not self._render_viewport and self._offscreen_render:
-            # disable the viewport if offscreen_render is enabled
-            from omni.kit.viewport.utility import get_active_viewport
-
-            get_active_viewport().updates_enabled = False
-
         # override enable scene querying if rendering is enabled
         # this is needed for some GUI features
-        if self._has_gui:
+        if self._visualizer_interface._has_gui:
             self.cfg.enable_scene_query_support = True
         # set up flatcache/fabric interface (default is None)
         # this is needed to flush the flatcache data into Hydra manually when calling `render()`
@@ -309,7 +242,8 @@ class SimulationContext:
             pass
         # Disable USD cloning if we are not rendering or using RTX sensors
         NewtonManager._clone_physics_only = (
-            self.render_mode == self._visualizer_interface.RenderMode.NO_GUI_OR_RENDERING or self.render_mode == self._visualizer_interface.RenderMode.NO_RENDERING
+            self._visualizer_interface.render_mode == self._visualizer_interface.RenderMode.NO_GUI_OR_RENDERING
+            or self._visualizer_interface.render_mode == self._visualizer_interface.RenderMode.NO_RENDERING
         )
 
         # Mark as initialized (singleton pattern)
@@ -446,18 +380,6 @@ class SimulationContext:
         if render_mode is not None and render_mode.lower() == "raytracedlighting":
             self.settings.set("/rtx/rendermode", "RaytracedLighting")
 
-    """
-    Operations - New.
-    """
-
-    def has_gui(self) -> bool:
-        """Returns whether the simulation has a GUI enabled.
-
-        True if the simulation has a GUI enabled either locally or live-streamed.
-        """
-        return self._has_gui
-
-
     def has_rtx_sensors(self) -> bool:
         """Returns whether the simulation has any RTX-rendering related sensors.
 
@@ -485,56 +407,6 @@ class SimulationContext:
         .. _Fabric documentation: https://docs.omniverse.nvidia.com/kit/docs/usdrt/latest/docs/usd_fabric_usdrt.html
         """
         return self._fabric_iface is not None
-
-    """
-    Operations - New utilities.
-    """
-
-    def set_render_mode(self, mode: int):
-        """Change the current render mode of the simulation.
-
-        Please see :class:`RenderMode` for more information on the different render modes.
-
-        .. note::
-            When no GUI is available (locally or livestreamed), we do not need to choose whether the viewport
-            needs to render or not (since there is no GUI). Thus, in this case, calling the function will not
-            change the render mode.
-
-        Args:
-            mode (RenderMode): The rendering mode. If different than SimulationContext's rendering mode,
-            SimulationContext's mode is changed to the new mode.
-
-        Raises:
-            ValueError: If the input mode is not supported.
-        """
-        # check if mode change is possible -- not possible when no GUI is available
-        if not self._has_gui:
-            logger.warning(
-                f"Cannot change render mode when GUI is disabled. Using the default render mode: {self.render_mode}."
-            )
-            return
-        # check if there is a mode change
-        # note: this is mostly needed for GUI when we want to switch between full rendering and no rendering.
-        if mode != self.render_mode:
-            if mode == self._visualizer_interface.RenderMode.FULL_RENDERING:
-                # display the viewport and enable updates
-                self._viewport_context.updates_enabled = True  # pyright: ignore [reportOptionalMemberAccess]
-                self._viewport_window.visible = True  # pyright: ignore [reportOptionalMemberAccess]
-            elif mode == self._visualizer_interface.RenderMode.PARTIAL_RENDERING:
-                # hide the viewport and disable updates
-                self._viewport_context.updates_enabled = False  # pyright: ignore [reportOptionalMemberAccess]
-                self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
-            elif mode == self._visualizer_interface.RenderMode.NO_RENDERING:
-                # hide the viewport and disable updates
-                if self._viewport_context is not None:
-                    self._viewport_context.updates_enabled = False  # pyright: ignore [reportOptionalMemberAccess]
-                    self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
-                # reset the throttle counter
-                self._render_throttle_counter = 0
-            else:
-                raise ValueError(f"Unsupported render mode: {mode}! Please check `RenderMode` for details.")
-            # update render mode
-            self.render_mode = mode
 
     def set_setting(self, name: str, value: Any):
         """Set simulation settings using the Carbonite SDK.
@@ -930,7 +802,7 @@ def build_simulation_context(
             cfg = GroundPlaneCfg()
             cfg.func("/World/defaultGroundPlane", cfg)
 
-        if add_lighting or (auto_add_lighting and sim.has_gui()):
+        if add_lighting or (auto_add_lighting and sim._visualizer_interface.has_gui()):
             # Lighting
             cfg = DomeLightCfg(
                 color=(0.1, 0.1, 0.1),
@@ -947,7 +819,7 @@ def build_simulation_context(
         logger.error(traceback.format_exc())
         raise
     finally:
-        if not sim.has_gui():
+        if not sim._visualizer_interface.has_gui():
             # Stop simulation only if we aren't rendering otherwise the app will hang indefinitely
             sim.stop()
 

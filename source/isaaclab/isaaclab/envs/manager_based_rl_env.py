@@ -175,7 +175,7 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
 
         # check if we need to do rendering within the physics loop
         # note: checked here once to avoid multiple checks within the loop
-        is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors()
+        is_rendering = self.sim._visualizer_interface.has_gui() or self.sim.has_rtx_sensors()
 
         # perform physics stepping
         for _ in range(self.cfg.decimation):
@@ -270,10 +270,10 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             return None
         elif self.render_mode == "rgb_array":
             # check that if any render could have happened
-            if self.sim.render_mode.value < self.sim._visualizer_interface.RenderMode.PARTIAL_RENDERING.value:
+            if self.sim._visualizer_interface.render_mode.value < self.sim._visualizer_interface.RenderMode.PARTIAL_RENDERING.value:
                 raise RuntimeError(
                     f"Cannot render '{self.render_mode}' when the simulation render mode is"
-                    f" '{self.sim.render_mode.name}'. Please set the simulation render mode to:"
+                    f" '{self.sim._visualizer_interface.render_mode.name}'. Please set the simulation render mode to:"
                     f"'{self.sim._visualizer_interface.RenderMode.PARTIAL_RENDERING.name}' or '{self.sim._visualizer_interface.RenderMode.FULL_RENDERING.name}'."
                     " If running headless, make sure --enable_cameras is set."
                 )

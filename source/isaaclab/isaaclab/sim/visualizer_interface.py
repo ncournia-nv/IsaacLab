@@ -76,6 +76,95 @@ class VisualizerInterface:
         self._visualizers: list[Visualizer] = []
         self._visualizer_step_counter = 0
         self._scene_data_provider: SceneDataProvider | None = None
+        
+        # viewport state
+        self._viewport_context = None
+        self._viewport_window = None
+        self._render_throttle_counter = 0
+        self._render_throttle_period = 5
+        
+        # initialize render mode based on GUI/rendering settings
+        self._init_render_mode()
+
+    def _init_render_mode(self):
+        """Initialize render mode based on GUI and rendering settings."""
+        settings = self._sim.settings
+        
+        # read GUI flags
+        local_gui = settings.get("/app/window/enabled") or False
+        livestream_gui = settings.get("/app/livestream/enabled") or False
+        xr_gui = settings.get("/app/xr/enabled") or False
+        self._has_gui = local_gui or livestream_gui or xr_gui
+        
+        # read render flags
+        self._offscreen_render = bool(settings.get("/isaaclab/render/offscreen"))
+        self._render_viewport = bool(settings.get("/isaaclab/render/active_viewport"))
+        
+        # set render mode
+        if not self._has_gui and not self._offscreen_render:
+            self.render_mode = self.RenderMode.NO_GUI_OR_RENDERING
+        elif not self._has_gui and self._offscreen_render:
+            self.render_mode = self.RenderMode.PARTIAL_RENDERING
+        else:
+            self.render_mode = self.RenderMode.FULL_RENDERING
+            # acquire viewport context
+            try:
+                import omni.ui as ui
+                from omni.kit.viewport.utility import get_active_viewport
+                
+                self._viewport_context = get_active_viewport()
+                self._viewport_context.updates_enabled = True
+                self._viewport_window = ui.Workspace.get_window("Viewport")
+            except (ImportError, AttributeError):
+                pass
+        
+        # disable viewport if offscreen render is enabled but no GUI
+        if not self._render_viewport and self._offscreen_render:
+            try:
+                from omni.kit.viewport.utility import get_active_viewport
+                get_active_viewport().updates_enabled = False
+            except (ImportError, AttributeError):
+                pass
+
+    def set_render_mode(self, mode: int):
+        """Change the current render mode.
+
+        Args:
+            mode: The rendering mode to set.
+
+        Raises:
+            ValueError: If the input mode is not supported.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # check if mode change is possible -- not possible when no GUI is available
+        if not self._has_gui:
+            logger.warning(
+                f"Cannot change render mode when GUI is disabled. Using the default render mode: {self.render_mode}."
+            )
+            return
+        # check if there is a mode change
+        if mode != self.render_mode:
+            if mode == self.RenderMode.FULL_RENDERING:
+                # display the viewport and enable updates
+                self._viewport_context.updates_enabled = True  # pyright: ignore [reportOptionalMemberAccess]
+                self._viewport_window.visible = True  # pyright: ignore [reportOptionalMemberAccess]
+            elif mode == self.RenderMode.PARTIAL_RENDERING:
+                # hide the viewport and disable updates
+                self._viewport_context.updates_enabled = False  # pyright: ignore [reportOptionalMemberAccess]
+                self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
+            elif mode == self.RenderMode.NO_RENDERING:
+                # hide the viewport and disable updates
+                if self._viewport_context is not None:
+                    self._viewport_context.updates_enabled = False  # pyright: ignore [reportOptionalMemberAccess]
+                    self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
+                # reset the throttle counter
+                self._render_throttle_counter = 0
+            else:
+                raise ValueError(f"Unsupported render mode: {mode}! Please check `RenderMode` for details.")
+            # update render mode
+            self.render_mode = mode
 
     @property
     def visualizers(self) -> list[Visualizer]:
@@ -86,6 +175,10 @@ class VisualizerInterface:
     def scene_data_provider(self) -> SceneDataProvider | None:
         """Get the scene data provider."""
         return self._scene_data_provider
+
+    def has_gui(self) -> bool:
+        """Returns whether a GUI is enabled."""
+        return self._has_gui
 
     def _create_default_visualizer_configs(self, requested_visualizers: list[str]) -> list:
         """Create default visualizer configurations for requested visualizer types.
@@ -153,7 +246,7 @@ class VisualizerInterface:
         # If no visualizers were requested via --visualizer flag, skip initialization
         if not requested_visualizers:
             # Skip if no GUI and no offscreen rendering (true headless mode)
-            if not self._sim._has_gui and not self._sim._offscreen_render:
+            if not self._has_gui and not self._offscreen_render:
                 return
             logger.info(
                 "[SimulationContext] No visualizers specified via --visualizer flag. "
@@ -163,7 +256,7 @@ class VisualizerInterface:
 
         # If in true headless mode (no GUI, no offscreen rendering) but visualizers were requested,
         # filter out visualizers that require GUI (like omniverse)
-        if not self._sim._has_gui and not self._sim._offscreen_render:
+        if not self._has_gui and not self._offscreen_render:
             # Only non-GUI visualizers (rerun, newton) can run in headless mode
             non_gui_visualizers = [v for v in requested_visualizers if v in ["rerun", "newton"]]
             if not non_gui_visualizers:
@@ -344,7 +437,7 @@ class VisualizerInterface:
             requested_visualizers = [v.strip() for v in requested_visualizers_str.split(",") if v.strip()]
             if "omniverse" in requested_visualizers:
                 # Only return True if we have a GUI (omniverse requires GUI)
-                return self._sim._has_gui
+                return self._has_gui
 
         return False
 
@@ -432,16 +525,16 @@ class VisualizerInterface:
             raise exception_to_raise
         # check if we need to change the render mode
         if mode is not None:
-            self._sim.set_render_mode(mode)
+            self.set_render_mode(mode)
         # render based on the render mode
-        if self._sim.render_mode == self.RenderMode.NO_GUI_OR_RENDERING:
+        if self.render_mode == self.RenderMode.NO_GUI_OR_RENDERING:
             # we never want to render anything here (this is for complete headless mode)
             pass
-        elif self._sim.render_mode == self.RenderMode.NO_RENDERING:
+        elif self.render_mode == self.RenderMode.NO_RENDERING:
             # throttle the rendering frequency to keep the UI responsive
-            self._sim._render_throttle_counter += 1
-            if self._sim._render_throttle_counter % self._sim._render_throttle_period == 0:
-                self._sim._render_throttle_counter = 0
+            self._render_throttle_counter += 1
+            if self._render_throttle_counter % self._render_throttle_period == 0:
+                self._render_throttle_counter = 0
                 # here we don't render viewport so don't need to flush fabric data
                 # note: we don't call super().render() anymore because they do flush the fabric data
                 self._sim.settings.set_bool("/app/player/playSimulations", False)

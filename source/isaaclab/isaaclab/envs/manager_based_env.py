@@ -155,7 +155,7 @@ class ManagerBasedEnv:
         # viewport is not available in other rendering modes so the function will throw a warning
         # FIXME: This needs to be fixed in the future when we unify the UI functionalities even for
         # non-rendering modes.
-        if self.sim.render_mode >= self.sim._visualizer_interface.RenderMode.PARTIAL_RENDERING:
+        if self.sim._visualizer_interface.render_mode >= self.sim._visualizer_interface.RenderMode.PARTIAL_RENDERING:
             self.viewport_camera_controller = ViewportCameraController(self, self.cfg.viewer)
         else:
             self.viewport_camera_controller = None
@@ -189,7 +189,7 @@ class ManagerBasedEnv:
         # extend UI elements
         # we need to do this here after all the managers are initialized
         # this is because they dictate the sensors and commands right now
-        if self.sim.has_gui() and self.cfg.ui_window_class_type is not None:
+        if self.sim._visualizer_interface.has_gui() and self.cfg.ui_window_class_type is not None:
             # setup live visualizers
             self.setup_manager_visualizers()
             self._window = self.cfg.ui_window_class_type(self, window_name="IsaacLab")
@@ -482,7 +482,7 @@ class ManagerBasedEnv:
 
         # check if we need to do rendering within the physics loop
         # note: checked here once to avoid multiple checks within the loop
-        is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors()
+        is_rendering = self.sim._visualizer_interface.has_gui() or self.sim.has_rtx_sensors()
 
         # perform physics stepping
         for _ in range(self.cfg.decimation):
