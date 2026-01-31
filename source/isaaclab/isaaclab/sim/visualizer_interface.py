@@ -23,73 +23,54 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class VisualizerInterface:
-    """Manages visualizer lifecycle for SimulationContext.
+class RenderMode(enum.IntEnum):
+    """Rendering modes controlling viewport/UI update frequency.
 
-    This class handles initialization, stepping, and cleanup of visualizers.
-    It delegates to the SimulationContext for settings and state access.
+    - NO_GUI_OR_RENDERING (-1): Complete headless, nothing updated
+    - NO_RENDERING (0): UI updated at reduced rate
+    - PARTIAL_RENDERING (1): UI + cameras updated
+    - FULL_RENDERING (2): UI + cameras + viewports updated
     """
 
-    class RenderMode(enum.IntEnum):
-        """Different rendering modes for the simulation.
+    NO_GUI_OR_RENDERING = -1
+    NO_RENDERING = 0
+    PARTIAL_RENDERING = 1
+    FULL_RENDERING = 2
 
-        Render modes correspond to how the viewport and other UI elements (such as listeners to keyboard or mouse
-        events) are updated. There are three main components that can be updated when the simulation is rendered:
 
-        1. **UI elements and other extensions**: These are UI elements (such as buttons, sliders, etc.) and other
-        extensions that are running in the background that need to be updated when the simulation is running.
-        2. **Cameras**: These are typically based on Hydra textures and are used to render the scene from different
-        viewpoints. They can be attached to a viewport or be used independently to render the scene.
-        3. **Viewports**: These are windows where you can see the rendered scene.
+class VisualizerInterface:
+    """Manages visualizer lifecycle and rendering for SimulationContext."""
 
-        Updating each of the above components has a different overhead. For example, updating the viewports is
-        computationally expensive compared to updating the UI elements. Therefore, it is useful to be able to
-        control what is updated when the simulation is rendered. This is where the render mode comes in. There are
-        four different render modes:
-
-        * :attr:`NO_GUI_OR_RENDERING`: The simulation is running without a GUI and off-screen rendering flag is disabled,
-        so none of the above are updated.
-        * :attr:`NO_RENDERING`: No rendering, where only 1 is updated at a lower rate.
-        * :attr:`PARTIAL_RENDERING`: Partial rendering, where only 1 and 2 are updated.
-        * :attr:`FULL_RENDERING`: Full rendering, where everything (1, 2, 3) is updated.
-
-        .. _Viewports: https://docs.omniverse.nvidia.com/extensions/latest/ext_viewport.html
-        """
-
-        NO_GUI_OR_RENDERING = -1
-        """The simulation is running without a GUI and off-screen rendering is disabled."""
-        NO_RENDERING = 0
-        """No rendering, where only other UI elements are updated at a lower rate."""
-        PARTIAL_RENDERING = 1
-        """Partial rendering, where the simulation cameras and UI elements are updated."""
-        FULL_RENDERING = 2
-        """Full rendering, where all the simulation viewports, cameras and UI elements are updated."""
+    # Expose RenderMode as class attribute for backwards compatibility
+    RenderMode = RenderMode
 
     def __init__(self, sim_context: "SimulationContext"):
-        """Initialize the visualizer interface.
-        
+        """Initialize visualizer interface.
+
         Args:
-            sim_context: The simulation context this interface belongs to.
+            sim_context: Parent simulation context.
         """
         self._sim = sim_context
-        self.settings.set_bool("/app/player/playSimulations", False)
+        self.dt = self._sim.cfg.dt
 
-        # initialize visualizers and scene data provider
+        # Visualizer state
         self._visualizers: list[Visualizer] = []
         self._visualizer_step_counter = 0
         self._scene_data_provider: SceneDataProvider | None = None
 
-        # viewport state
+        # Viewport state
         self._viewport_context = None
         self._viewport_window = None
         self._render_throttle_counter = 0
         self._render_throttle_period = 5
-        self.dt = self._sim.cfg.dt
 
-        # initialize render mode based on GUI/rendering settings
-        self._init_render_mode()
+        # App control
         self._disable_app_control_on_stop_handle = False
         self._app_control_on_stop_handle = None
+
+        self._init_render_mode()
+
+    # -- Properties --
 
     @property
     def settings(self):
@@ -103,274 +84,176 @@ class VisualizerInterface:
     def stage(self):
         return self._sim.stage
 
-    def _init_render_mode(self):
-        """Initialize render mode based on GUI and rendering settings."""
-        settings = self.settings
-        
-        # read GUI flags
-        local_gui = settings.get("/app/window/enabled") or False
-        livestream_gui = settings.get("/app/livestream/enabled") or False
-        xr_gui = settings.get("/app/xr/enabled") or False
-        self._has_gui = local_gui or livestream_gui or xr_gui
-        
-        # read render flags
-        self._offscreen_render = bool(settings.get("/isaaclab/render/offscreen"))
-        self._render_viewport = bool(settings.get("/isaaclab/render/active_viewport"))
-        
-        # set render mode
-        if not self._has_gui and not self._offscreen_render:
-            self.render_mode = self.RenderMode.NO_GUI_OR_RENDERING
-        elif not self._has_gui and self._offscreen_render:
-            self.render_mode = self.RenderMode.PARTIAL_RENDERING
-        else:
-            self.render_mode = self.RenderMode.FULL_RENDERING
-            # acquire viewport context
-            try:
-                import omni.ui as ui
-                from omni.kit.viewport.utility import get_active_viewport
-                
-                self._viewport_context = get_active_viewport()
-                self._viewport_context.updates_enabled = True
-                self._viewport_window = ui.Workspace.get_window("Viewport")
-            except (ImportError, AttributeError):
-                pass
-        
-        # disable viewport if offscreen render is enabled but no GUI
-        if not self._render_viewport and self._offscreen_render:
-            try:
-                from omni.kit.viewport.utility import get_active_viewport
-                get_active_viewport().updates_enabled = False
-            except (ImportError, AttributeError):
-                pass
-
-    def set_render_mode(self, mode: int):
-        """Change the current render mode.
-
-        Args:
-            mode: The rendering mode to set.
-
-        Raises:
-            ValueError: If the input mode is not supported.
-        """
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        # check if mode change is possible -- not possible when no GUI is available
-        if not self._has_gui:
-            logger.warning(
-                f"Cannot change render mode when GUI is disabled. Using the default render mode: {self.render_mode}."
-            )
-            return
-        # check if there is a mode change
-        if mode != self.render_mode:
-            if mode == self.RenderMode.FULL_RENDERING:
-                # display the viewport and enable updates
-                self._viewport_context.updates_enabled = True  # pyright: ignore [reportOptionalMemberAccess]
-                self._viewport_window.visible = True  # pyright: ignore [reportOptionalMemberAccess]
-            elif mode == self.RenderMode.PARTIAL_RENDERING:
-                # hide the viewport and disable updates
-                self._viewport_context.updates_enabled = False  # pyright: ignore [reportOptionalMemberAccess]
-                self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
-            elif mode == self.RenderMode.NO_RENDERING:
-                # hide the viewport and disable updates
-                if self._viewport_context is not None:
-                    self._viewport_context.updates_enabled = False  # pyright: ignore [reportOptionalMemberAccess]
-                    self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
-                # reset the throttle counter
-                self._render_throttle_counter = 0
-            else:
-                raise ValueError(f"Unsupported render mode: {mode}! Please check `RenderMode` for details.")
-            # update render mode
-            self.render_mode = mode
-
     @property
     def visualizers(self) -> list[Visualizer]:
-        """Get the list of active visualizers."""
         return self._visualizers
 
     @property
     def scene_data_provider(self) -> SceneDataProvider | None:
-        """Get the scene data provider."""
         return self._scene_data_provider
 
     def has_gui(self) -> bool:
-        """Returns whether a GUI is enabled."""
         return self._has_gui
 
-    def _create_default_visualizer_configs(self, requested_visualizers: list[str]) -> list:
-        """Create default visualizer configurations for requested visualizer types.
+    # -- Initialization --
 
-        This method creates minimal default configurations for visualizers when none are defined
-        in the simulation config. Each visualizer is created with all default parameters.
+    def _init_render_mode(self) -> None:
+        """Initialize render mode based on GUI/rendering settings."""
+        self.settings.set_bool("/app/player/playSimulations", False)
 
-        Args:
-            requested_visualizers: List of visualizer type names (e.g., ['newton', 'rerun', 'omniverse']).
+        # Detect GUI mode
+        local_gui = self.settings.get("/app/window/enabled") or False
+        livestream_gui = self.settings.get("/app/livestream/enabled") or False
+        xr_gui = self.settings.get("/app/xr/enabled") or False
+        self._has_gui = local_gui or livestream_gui or xr_gui
 
-        Returns:
-            List of default visualizer config instances.
-        """
-        default_configs = []
+        # Detect render flags
+        self._offscreen_render = bool(self.settings.get("/isaaclab/render/offscreen"))
+        self._render_viewport = bool(self.settings.get("/isaaclab/render/active_viewport"))
 
-        for viz_type in requested_visualizers:
-            try:
-                if viz_type == "newton":
-                    # Create default Newton visualizer config
-                    default_configs.append(NewtonVisualizerCfg())
-                elif viz_type == "rerun":
-                    # Create default Rerun visualizer config
-                    default_configs.append(RerunVisualizerCfg())
-                elif viz_type == "omniverse":
-                    # Create default Omniverse visualizer config
-                    default_configs.append(OVVisualizerCfg())
-                else:
-                    logger.warning(
-                        f"[SimulationContext] Unknown visualizer type '{viz_type}' requested. "
-                        "Valid types: 'newton', 'rerun', 'omniverse'. Skipping."
-                    )
-            except Exception as e:
-                logger.error(f"[SimulationContext] Failed to create default config for visualizer '{viz_type}': {e}")
+        # Set render mode
+        if not self._has_gui and not self._offscreen_render:
+            self.render_mode = RenderMode.NO_GUI_OR_RENDERING
+        elif not self._has_gui and self._offscreen_render:
+            self.render_mode = RenderMode.PARTIAL_RENDERING
+        else:
+            self.render_mode = RenderMode.FULL_RENDERING
+            self._init_viewport()
 
-        return default_configs
+        # Disable viewport for offscreen-only rendering
+        if not self._render_viewport and self._offscreen_render:
+            self._disable_viewport()
 
-    def initialize_visualizers(self) -> None:
-        """Initialize visualizers based on the --visualizer command-line flag.
+    def _init_viewport(self) -> None:
+        """Acquire viewport context for GUI mode."""
+        try:
+            import omni.ui as ui
+            from omni.kit.viewport.utility import get_active_viewport
+            self._viewport_context = get_active_viewport()
+            self._viewport_context.updates_enabled = True
+            self._viewport_window = ui.Workspace.get_window("Viewport")
+        except (ImportError, AttributeError):
+            pass
 
-        This method creates and initializes visualizers only when explicitly requested via
-        the --visualizer flag. It supports:
-        - Single visualizer: --visualizer rerun
-        - Multiple visualizers: --visualizer rerun newton omniverse
-        - No visualizers: omit the --visualizer flag (default behavior)
+    def _disable_viewport(self) -> None:
+        """Disable viewport updates."""
+        try:
+            from omni.kit.viewport.utility import get_active_viewport
+            get_active_viewport().updates_enabled = False
+        except (ImportError, AttributeError):
+            pass
 
-        If visualizer configs are defined in SimulationCfg.visualizer_cfgs, they will be used.
-        Otherwise, default configs with all default parameters will be automatically created.
-
-        Note:
-            - If --headless is specified, NO visualizers will be initialized (headless takes precedence).
-            - If --visualizer is not specified, NO visualizers will be initialized.
-            - If --visualizer is specified but no configs exist, default configs are created automatically.
-            - Only visualizers specified via --visualizer will be initialized, even if
-              multiple visualizer configs are present in the simulation config.
-        """
-
-        # Check if specific visualizers were requested via command-line flag
-        requested_visualizers_str = self._sim.settings.get("/isaaclab/visualizer")
-        if requested_visualizers_str is None:
-            requested_visualizers_str = ""
-
-        # Parse comma-separated visualizer list
-        requested_visualizers = [v.strip() for v in requested_visualizers_str.split(",") if v.strip()]
-
-        # If no visualizers were requested via --visualizer flag, skip initialization
-        if not requested_visualizers:
-            # Skip if no GUI and no offscreen rendering (true headless mode)
-            if not self._has_gui and not self._offscreen_render:
-                return
-            logger.info(
-                "[SimulationContext] No visualizers specified via --visualizer flag. "
-                "Skipping visualizer initialization. Use --visualizer <type> to enable visualizers."
-            )
+    def set_render_mode(self, mode: int) -> None:
+        """Change the current render mode."""
+        if not self._has_gui:
+            logger.warning(f"Cannot change render mode without GUI. Using: {self.render_mode}")
             return
 
-        # If in true headless mode (no GUI, no offscreen rendering) but visualizers were requested,
-        # filter out visualizers that require GUI (like omniverse)
-        if not self._has_gui and not self._offscreen_render:
-            # Only non-GUI visualizers (rerun, newton) can run in headless mode
-            non_gui_visualizers = [v for v in requested_visualizers if v in ["rerun", "newton"]]
-            if not non_gui_visualizers:
-                logger.warning(
-                    "[SimulationContext] Headless mode enabled but only GUI-dependent visualizers "
-                    f"(like 'omniverse') were requested: {requested_visualizers}. "
-                    "Skipping all visualizer initialization."
-                )
-                return
-            if len(non_gui_visualizers) < len(requested_visualizers):
-                logger.info(
-                    "[SimulationContext] Headless mode enabled. Filtering visualizers from "
-                    f"{requested_visualizers} to {non_gui_visualizers} (excluding GUI-dependent visualizers)."
-                )
-            requested_visualizers = non_gui_visualizers
+        if mode == self.render_mode:
+            return
 
-        # Handle different input formats
-        visualizer_cfgs = []
-        if self._sim.cfg.visualizer_cfgs is not None:
-            if isinstance(self._sim.cfg.visualizer_cfgs, list):
-                visualizer_cfgs = self._sim.cfg.visualizer_cfgs
-            else:
-                visualizer_cfgs = [self._sim.cfg.visualizer_cfgs]
-
-        # If no visualizer configs are defined but visualizers were requested, create default configs
-        if len(visualizer_cfgs) == 0:
-            logger.info(
-                "[SimulationContext] No visualizer configs found in simulation config. "
-                f"Creating default configs for requested visualizers: {requested_visualizers}"
-            )
-            visualizer_cfgs = self._create_default_visualizer_configs(requested_visualizers)
+        if mode == RenderMode.FULL_RENDERING:
+            self._viewport_context.updates_enabled = True  # pyright: ignore [reportOptionalMemberAccess]
+            self._viewport_window.visible = True  # pyright: ignore [reportOptionalMemberAccess]
+        elif mode in (RenderMode.PARTIAL_RENDERING, RenderMode.NO_RENDERING):
+            if self._viewport_context:
+                self._viewport_context.updates_enabled = False
+                self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
+            if mode == RenderMode.NO_RENDERING:
+                self._render_throttle_counter = 0
         else:
-            # Filter visualizers based on --visualizer flag
-            original_count = len(visualizer_cfgs)
+            raise ValueError(f"Unsupported render mode: {mode}")
 
-            # Filter to only requested visualizers
-            visualizer_cfgs = [cfg for cfg in visualizer_cfgs if cfg.visualizer_type in requested_visualizers]
+        self.render_mode = mode
 
-            if len(visualizer_cfgs) == 0:
-                available_types = [
-                    cfg.visualizer_type
-                    for cfg in (
-                        self._sim.cfg.visualizer_cfgs
-                        if isinstance(self._sim.cfg.visualizer_cfgs, list)
-                        else [self._sim.cfg.visualizer_cfgs]
-                    )
-                    if cfg.visualizer_type is not None
-                ]
-                logger.warning(
-                    f"[SimulationContext] Visualizer(s) {requested_visualizers} requested via --visualizer flag, "
-                    "but no matching visualizer configs were found in simulation config. "
-                    f"Available visualizer types: {available_types}"
-                )
-                return
-            elif len(visualizer_cfgs) < original_count:
-                logger.info(
-                    f"[SimulationContext] Visualizer(s) {requested_visualizers} specified via --visualizer flag. "
-                    f"Filtering {original_count} configs to {len(visualizer_cfgs)} matching visualizer(s)."
-                )
+    # -- Visualizer Initialization --
 
-        # Create scene data provider with visualizer configs
-        # Provider will determine which backends are active
-        if visualizer_cfgs:
-            self._scene_data_provider = SceneDataProvider(visualizer_cfgs)
+    def _create_default_visualizer_configs(self, requested: list[str]) -> list:
+        """Create default configs for requested visualizer types."""
+        configs = []
+        type_map = {"newton": NewtonVisualizerCfg, "rerun": RerunVisualizerCfg, "omniverse": OVVisualizerCfg}
 
-        # Create and initialize each visualizer
-        for viz_cfg in visualizer_cfgs:
+        for viz_type in requested:
+            if viz_type in type_map:
+                try:
+                    configs.append(type_map[viz_type]())
+                except Exception as e:
+                    logger.error(f"Failed to create default config for '{viz_type}': {e}")
+            else:
+                logger.warning(f"Unknown visualizer type '{viz_type}'. Valid: {list(type_map.keys())}")
+
+        return configs
+
+    def _get_requested_visualizers(self) -> list[str]:
+        """Parse --visualizer flag and filter for headless mode."""
+        requested_str = self.settings.get("/isaaclab/visualizer") or ""
+        requested = [v.strip() for v in requested_str.split(",") if v.strip()]
+
+        if not requested:
+            return []
+
+        # Filter GUI-dependent visualizers in headless mode
+        if not self._has_gui and not self._offscreen_render:
+            headless_compatible = [v for v in requested if v in ("newton", "rerun")]
+            if len(headless_compatible) < len(requested):
+                logger.info(f"Headless mode: filtering {requested} to {headless_compatible}")
+            return headless_compatible
+
+        return requested
+
+    def initialize_visualizers(self) -> None:
+        """Initialize visualizers based on --visualizer flag."""
+        requested = self._get_requested_visualizers()
+
+        if not requested:
+            if self._has_gui or self._offscreen_render:
+                logger.info("No visualizers specified via --visualizer flag.")
+            return
+
+        # Get or create visualizer configs
+        cfg_list = self._sim.cfg.visualizer_cfgs
+        if cfg_list is None:
+            visualizer_cfgs = self._create_default_visualizer_configs(requested)
+        else:
+            visualizer_cfgs = cfg_list if isinstance(cfg_list, list) else [cfg_list]
+            visualizer_cfgs = [c for c in visualizer_cfgs if c.visualizer_type in requested]
+
+            if not visualizer_cfgs:
+                logger.info(f"Creating default configs for: {requested}")
+                visualizer_cfgs = self._create_default_visualizer_configs(requested)
+
+        if not visualizer_cfgs:
+            return
+
+        # Create scene data provider
+        self._scene_data_provider = SceneDataProvider(visualizer_cfgs)
+
+        # Initialize each visualizer
+        for cfg in visualizer_cfgs:
             try:
-                visualizer = viz_cfg.create_visualizer()
-
-                # Build scene data dict with only what this visualizer needs
-                scene_data = {}
-
-                # Newton and Rerun visualizers only need scene_data_provider
-                if viz_cfg.visualizer_type in ("newton", "rerun"):
-                    scene_data["scene_data_provider"] = self._scene_data_provider
-
-                # OV visualizer needs USD stage and simulation context
-                elif viz_cfg.visualizer_type == "omniverse":
-                    scene_data["usd_stage"] = self._sim.stage
-                    scene_data["simulation_context"] = self._sim
-
-                # Initialize visualizer with minimal required data
+                visualizer = cfg.create_visualizer()
+                scene_data = self._build_scene_data(cfg)
                 visualizer.initialize(scene_data)
                 self._visualizers.append(visualizer)
-                logger.info(f"Initialized visualizer: {type(visualizer).__name__} (type: {viz_cfg.visualizer_type})")
-
+                logger.info(f"Initialized: {type(visualizer).__name__} ({cfg.visualizer_type})")
             except Exception as e:
-                logger.error(
-                    f"Failed to initialize visualizer '{viz_cfg.visualizer_type}' ({type(viz_cfg).__name__}): {e}"
-                )
+                logger.error(f"Failed to init '{cfg.visualizer_type}': {e}")
+
+    def _build_scene_data(self, cfg) -> dict:
+        """Build scene data dict for visualizer initialization."""
+        if cfg.visualizer_type in ("newton", "rerun"):
+            return {"scene_data_provider": self._scene_data_provider}
+        elif cfg.visualizer_type == "omniverse":
+            return {"usd_stage": self._sim.stage, "simulation_context": self._sim}
+        return {}
+
+    # -- Unified Interface Methods --
 
     def forward(self, dt: float = 0.0) -> None:
         """Sync scene data and step all active visualizers.
 
         Args:
-            dt: Time step in seconds (use 0.0 for kinematics-only updates).
+            dt: Time step in seconds (0.0 for kinematics-only).
         """
         if self._scene_data_provider:
             self._scene_data_provider.update()
@@ -379,219 +262,143 @@ class VisualizerInterface:
             return
 
         self._visualizer_step_counter += 1
+        to_remove = []
 
-        # Update visualizers and check if any should be removed
-        visualizers_to_remove = []
-
-        for visualizer in self._visualizers:
+        for viz in self._visualizers:
             try:
-                # Check if visualizer is still running
-                if not visualizer.is_running():
-                    visualizers_to_remove.append(visualizer)
+                if not viz.is_running():
+                    to_remove.append(viz)
                     continue
 
-                # Handle training pause - block until resumed
-                while visualizer.is_training_paused() and visualizer.is_running():
-                    # Visualizers fetch backend-specific state themselves
-                    visualizer.step(0.0, state=None)
+                # Block while training paused
+                while viz.is_training_paused() and viz.is_running():
+                    viz.step(0.0, state=None)
 
-                # Always call step to process events, even if rendering is paused
-                # The visualizer's step() method handles pause state internally
-                visualizer.step(dt, state=None)
-
+                viz.step(dt, state=None)
             except Exception as e:
-                logger.error(f"Error stepping visualizer '{type(visualizer).__name__}': {e}")
-                visualizers_to_remove.append(visualizer)
+                logger.error(f"Error stepping {type(viz).__name__}: {e}")
+                to_remove.append(viz)
 
-        # Remove closed visualizers
-        for visualizer in visualizers_to_remove:
+        for viz in to_remove:
             try:
-                visualizer.close()
-                self._visualizers.remove(visualizer)
-                logger.info(f"Removed visualizer: {type(visualizer).__name__}")
+                viz.close()
+                self._visualizers.remove(viz)
+                logger.info(f"Removed: {type(viz).__name__}")
             except Exception as e:
                 logger.error(f"Error closing visualizer: {e}")
-
-    def close(self) -> None:
-        """Close all active visualizers and clean up resources."""
-        # Unsubscribe from app control events
-        if self._app_control_on_stop_handle is not None:
-            self._app_control_on_stop_handle.unsubscribe()
-            self._app_control_on_stop_handle = None
-
-        for visualizer in self._visualizers:
-            try:
-                visualizer.close()
-            except Exception as e:
-                logger.error(f"Error closing visualizer '{type(visualizer).__name__}': {e}")
-
-        self._visualizers.clear()
-        logger.info("All visualizers closed")
-
-    def reset(self, soft: bool) -> None:
-        """Handle visualizer warmup and initialization during reset."""
-        self.settings.set_bool("/app/player/playSimulations", False)
-        self._disable_app_control_on_stop_handle = not soft
-        if not soft:
-            for _ in range(2):
-                self.render(mode=None)
-        # Initialize visualizers after simulation is set up (only on first reset)
-        if not soft and not self._visualizers:
-            self.initialize_visualizers()
-        self._disable_app_control_on_stop_handle = False
-
-    def has_omniverse_visualizer(self) -> bool:
-        """Returns whether the Omniverse visualizer is enabled.
-
-        This checks both the configuration (before initialization) and the active visualizers
-        (after initialization) to determine if the Omniverse visualizer will be or is active.
-
-        Returns:
-            True if the Omniverse visualizer is requested or active, False otherwise.
-        """
-
-        # Check LAUNCH_OV_APP environment variable (useful for tests that need Omniverse)
-        launch_app_env = int(os.environ.get("LAUNCH_OV_APP") or 0)
-        if launch_app_env == 1:
-            return True
-
-        # First, check if already initialized visualizers include OVVisualizer
-        for visualizer in self._visualizers:
-            # Check if visualizer has visualizer_type attribute set to "omniverse"
-            if hasattr(visualizer, "cfg") and hasattr(visualizer.cfg, "visualizer_type"):
-                if visualizer.cfg.visualizer_type == "omniverse":
-                    return True
-            # Alternative: check the class name
-            if type(visualizer).__name__ == "OVVisualizer":
-                return True
-
-        # If not initialized yet, check the configuration/settings
-        requested_visualizers_str = self._sim.settings.get("/isaaclab/visualizer")
-        if requested_visualizers_str:
-            requested_visualizers = [v.strip() for v in requested_visualizers_str.split(",") if v.strip()]
-            if "omniverse" in requested_visualizers:
-                # Only return True if we have a GUI (omniverse requires GUI)
-                return self._has_gui
-
-        return False
-
-    def set_camera_view(
-        self,
-        eye: tuple[float, float, float],
-        target: tuple[float, float, float],
-        camera_prim_path: str = "/OmniverseKit_Persp",
-    ):
-        """Set the location and target of the viewport camera in the stage.
-
-        This method sets the camera view by calling the OVVisualizer's set_camera_view method.
-        If no OVVisualizer is active, this method has no effect.
-
-        Args:
-            eye: The location of the camera eye.
-            target: The location of the camera target.
-            camera_prim_path: The path to the camera primitive in the stage. Defaults to
-                "/OmniverseKit_Persp". Note: This parameter is ignored as the camera path
-                is determined by the active viewport.
-        """
-        # Find the Omniverse visualizer and call its set_camera_view method
-        for visualizer in self._visualizers:
-            if hasattr(visualizer, "cfg") and hasattr(visualizer.cfg, "visualizer_type"):
-                if visualizer.cfg.visualizer_type == "omniverse":
-                    if hasattr(visualizer, "set_camera_view"):
-                        visualizer.set_camera_view(eye, target)
-                        return
-            # Alternative: check the class name
-            if type(visualizer).__name__ == "OVVisualizer":
-                if hasattr(visualizer, "set_camera_view"):
-                    visualizer.set_camera_view(eye, target)
-                    return
-
-        logger.debug("No Omniverse visualizer found - set_camera_view has no effect.")
 
     def step(self, render: bool = True) -> None:
         """Step visualizers and optionally render.
 
-        This method:
-        1. Keeps UI responsive while simulation is paused
-        2. Syncs scene data and steps all visualizers
-        3. Optionally renders the viewport
-
         Args:
-            dt: Time step in seconds.
-            render: Whether to render after stepping. Defaults to True.
+            render: Whether to render after stepping.
         """
         # Keep UI responsive while paused
         while not self._sim.is_playing():
             self.render(mode=None)
 
-        # Sync scene data and step visualizers
         self.forward(self.get_rendering_dt() or self.dt)
 
-        # Render if requested
         if render:
             self.render(mode=None)
 
+    def reset(self, soft: bool) -> None:
+        """Reset visualizers (warmup renders on hard reset)."""
+        self.settings.set_bool("/app/player/playSimulations", False)
+        self._disable_app_control_on_stop_handle = not soft
+
+        if not soft:
+            for _ in range(2):
+                self.render(mode=None)
+            if not self._visualizers:
+                self.initialize_visualizers()
+
+        self._disable_app_control_on_stop_handle = False
+
+    def close(self) -> None:
+        """Close all visualizers and clean up."""
+        if self._app_control_on_stop_handle:
+            self._app_control_on_stop_handle.unsubscribe()
+            self._app_control_on_stop_handle = None
+
+        for viz in self._visualizers:
+            try:
+                viz.close()
+            except Exception as e:
+                logger.error(f"Error closing {type(viz).__name__}: {e}")
+
+        self._visualizers.clear()
+        logger.info("All visualizers closed")
+
+    # -- Omniverse-Specific Methods --
+
+    def has_omniverse_visualizer(self) -> bool:
+        """Check if Omniverse visualizer is active or requested."""
+        if int(os.environ.get("LAUNCH_OV_APP", 0)) == 1:
+            return True
+
+        for viz in self._visualizers:
+            if getattr(getattr(viz, "cfg", None), "visualizer_type", None) == "omniverse":
+                return True
+            if type(viz).__name__ == "OVVisualizer":
+                return True
+
+        requested = self.settings.get("/isaaclab/visualizer") or ""
+        if "omniverse" in requested:
+            return self._has_gui
+
+        return False
+
     def on_play(self) -> None:
-        """Called when simulation starts - handles OV timeline."""
+        """Handle OV timeline on simulation start."""
         if self.has_omniverse_visualizer():
             import omni.kit.app
             import omni.timeline
-
             omni.timeline.get_timeline_interface().play()
             omni.timeline.get_timeline_interface().commit()
             self.settings.set_bool("/app/player/playSimulations", False)
             omni.kit.app.get_app().update()
 
     def on_stop(self) -> None:
-        """Called when simulation stops - handles OV timeline."""
-        # this only applies for omniverse mode
+        """Handle OV timeline on simulation stop."""
         if self.has_omniverse_visualizer():
             import omni.kit.app
             import omni.timeline
-
             omni.timeline.get_timeline_interface().stop()
             self.settings.set_bool("/app/player/playSimulations", False)
             omni.kit.app.get_app().update()
 
     def render(self, mode) -> bool:
-        """Handle rendering.
-        
+        """Render the scene (OV mode only).
+
         Args:
-            mode: The rendering mode.
-            
+            mode: Render mode to set, or None to keep current.
+
         Returns:
-            True if rendering was handled, False otherwise.
+            True if rendered, False if not in OV mode.
         """
-        # pass if omniverse is not running
         if not self.has_omniverse_visualizer():
             return False
 
         import omni.kit.app
-
         raise_callback_exception_if_any()
 
-        # check if we need to change the render mode
         if mode is not None:
             self.set_render_mode(mode)
-        # render based on the render mode
-        if self.render_mode == self.RenderMode.NO_GUI_OR_RENDERING:
-            # we never want to render anything here (this is for complete headless mode)
+
+        if self.render_mode == RenderMode.NO_GUI_OR_RENDERING:
             pass
-        elif self.render_mode == self.RenderMode.NO_RENDERING:
-            # throttle the rendering frequency to keep the UI responsive
+        elif self.render_mode == RenderMode.NO_RENDERING:
             self._render_throttle_counter += 1
             if self._render_throttle_counter % self._render_throttle_period == 0:
                 self._render_throttle_counter = 0
-                # here we don't render viewport so don't need to flush fabric data
-                # note: we don't call super().render() anymore because they do flush the fabric data
                 self.settings.set_bool("/app/player/playSimulations", False)
                 omni.kit.app.get_app().update()
         else:
-            # render the simulation
             self.settings.set_bool("/app/player/playSimulations", False)
             omni.kit.app.get_app().update()
 
-        # app.update() may be changing the cuda device, so we force it back to our desired device here
+        # Restore CUDA device after app.update()
         if "cuda" in self.device:
             import torch
             torch.cuda.set_device(self.device)
@@ -599,29 +406,30 @@ class VisualizerInterface:
         return True
 
     def get_rendering_dt(self) -> float | None:
-        """Get the current rendering dt for OV mode.
-
-        Returns:
-            The rendering dt if OV mode, None otherwise.
-        """
+        """Get rendering dt for OV mode."""
         if not self.has_omniverse_visualizer():
             return None
 
-        # Helper function to get dt from frequency
-        def _get_dt_from_frequency():
-            frequency = self.settings.get("/app/runLoops/main/rateLimitFrequency")
-            return 1.0 / frequency if frequency else 0
+        def _from_frequency():
+            freq = self.settings.get("/app/runLoops/main/rateLimitFrequency")
+            return 1.0 / freq if freq else 0
 
         if self.settings.get("/app/runLoops/main/rateLimitEnabled"):
-            return _get_dt_from_frequency()
+            return _from_frequency()
 
         try:
             import omni.kit.loop._loop as omni_loop
-
-            _loop_runner = omni_loop.acquire_loop_interface()
-            if _loop_runner.get_manual_mode():
-                return _loop_runner.get_manual_step_size()
-            else:
-                return _get_dt_from_frequency()
+            runner = omni_loop.acquire_loop_interface()
+            return runner.get_manual_step_size() if runner.get_manual_mode() else _from_frequency()
         except Exception:
-            return _get_dt_from_frequency()
+            return _from_frequency()
+
+    def set_camera_view(self, eye: tuple, target: tuple, camera_prim_path: str = "/OmniverseKit_Persp") -> None:
+        """Set viewport camera position (OV visualizer only)."""
+        for viz in self._visualizers:
+            is_ov = getattr(getattr(viz, "cfg", None), "visualizer_type", None) == "omniverse"
+            if is_ov and hasattr(viz, "set_camera_view"):
+                viz.set_camera_view(eye, target)
+                return
+
+        logger.debug("No Omniverse visualizer found - set_camera_view has no effect.")
