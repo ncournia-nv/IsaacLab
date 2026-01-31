@@ -129,34 +129,5 @@ class RenderInterface:
                 # Needed for backward compatibility with older Isaac Sim versions
                 self._update_fabric = self._fabric_iface.update
 
-    def render(self, mode: int | None = None):
-        if self._visualizer_interface is None:
-            return
-        self._visualizer_interface.render(mode)
-
     def get_rendering_dt(self) -> float:
-        if self._visualizer_interface is not None:
-            ov_dt = self._visualizer_interface.get_rendering_dt()
-            if ov_dt is not None:
-                return ov_dt
-        return self._sim.cfg.dt
-
-    def on_play(self) -> None:
-        if self._visualizer_interface is None:
-            return
-        self._visualizer_interface.on_play()
-
-    def on_stop(self) -> None:
-        if self._visualizer_interface is None:
-            return
-        self._visualizer_interface.on_stop()
-
-    def set_camera_view(
-        self,
-        eye: tuple[float, float, float],
-        target: tuple[float, float, float],
-        camera_prim_path: str = "/OmniverseKit_Persp",
-    ):
-        if self._visualizer_interface is None:
-            return
-        self._visualizer_interface.set_camera_view(eye, target, camera_prim_path)
+        return self._sim.get_rendering_dt()

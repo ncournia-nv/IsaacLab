@@ -81,7 +81,7 @@ class SimulationContext:
 
         # Initialize Interfaces
         self._visualizer_interface: VisualizerInterface = VisualizerInterface(self)
-        self._render_interface: RenderInterface = RenderInterface(self)
+        self._render_interface: RenderInterface = RenderInterface(self)  # only initialize, sensor owns its lifecycle
         self._physics_interface: PhysicsInterface = PhysicsInterface(self)
 
         # define a global variable to store the exceptions raised in the callback stack
@@ -161,7 +161,7 @@ class SimulationContext:
         Args:
             mode: Render mode. Defaults to None (use current mode).
         """
-        self._visualizer_interface.render(mode)
+        self._visualizer_interface.render()
 
     def get_physics_dt(self) -> float:
         """Returns the physics time step."""
@@ -169,10 +169,7 @@ class SimulationContext:
 
     def get_rendering_dt(self) -> float:
         """Returns the rendering time step."""
-        ov_dt = self._visualizer_interface.get_rendering_dt()
-        if ov_dt is not None:
-            return ov_dt
-        return self.cfg.dt
+        return self._visualizer_interface.get_rendering_dt()
 
     def clear_all_callbacks(self) -> None:
         """Clear all callbacks and trigger garbage collection."""

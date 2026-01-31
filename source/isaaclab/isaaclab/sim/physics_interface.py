@@ -146,12 +146,8 @@ class PhysicsInterface:
         newton_cfg = params.get("newton_cfg", {}) if isinstance(params, dict) else {}
         NewtonManager.set_solver_settings(dict(newton_cfg) if newton_cfg else {})
 
-        # Disable USD cloning in headless mode
-        RenderMode = self._sim._visualizer_interface.RenderMode
-        NewtonManager._clone_physics_only = self._sim._visualizer_interface.render_mode in (
-            RenderMode.NO_GUI_OR_RENDERING,
-            RenderMode.NO_RENDERING,
-        )
+        # the usd clone mainly play the role to update fabric for omniverse
+        NewtonManager._clone_physics_only = "omniverse" not in self._sim._visualizer_interface._visualizers_str
 
     def reset(self, soft: bool) -> None:
         """Reset physics simulation.

@@ -14,14 +14,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import enum
 from typing import Any
-
+import omni.kit.app
 from pxr import UsdGeom
 
 from .ov_visualizer_cfg import OVVisualizerCfg
 from .visualizer import Visualizer
 
 logger = logging.getLogger(__name__)
+
+
+class RenderMode(enum.IntEnum):
+    """Rendering modes controlling viewport/UI update frequency.
+
+    - NO_GUI_OR_RENDERING (-1): Complete headless, nothing updated
+    - NO_RENDERING (0): UI updated at reduced rate
+    - PARTIAL_RENDERING (1): UI + cameras updated
+    - FULL_RENDERING (2): UI + cameras + viewports updated
+    """
+
+    NO_GUI_OR_RENDERING = -1
+    NO_RENDERING = 0
+    PARTIAL_RENDERING = 1
+    FULL_RENDERING = 2
 
 
 class OVVisualizer(Visualizer):
@@ -39,8 +55,20 @@ class OVVisualizer(Visualizer):
         self._viewport_window = None
         self._viewport_api = None
         self._is_initialized = False
+        self._simulation_context = None
         self._sim_time = 0.0
         self._step_counter = 0
+        self._simulation_app_running = False
+
+        self._viewport_context = None
+        self._viewport_window = None
+        self._render_throttle_counter = 0
+        self._render_throttle_period = 5
+
+        # App control
+        self._disable_app_control_on_stop_handle = False
+        self._app_control_on_stop_handle = None
+        self._current_render_mode = RenderMode.NO_GUI_OR_RENDERING
 
     def initialize(self, scene_data: dict[str, Any] | None = None) -> None:
         """Initialize OV visualizer."""
@@ -49,22 +77,21 @@ class OVVisualizer(Visualizer):
             return
 
         usd_stage = None
-        simulation_context = None
         if scene_data is not None:
             usd_stage = scene_data.get("usd_stage")
-            simulation_context = scene_data.get("simulation_context")
+            self._simulation_context = scene_data.get("simulation_context")
 
         if usd_stage is None:
             raise RuntimeError("OV visualizer requires a USD stage.")
 
         # Build metadata from simulation context if available
         metadata = {}
-        if simulation_context is not None:
+        if self._simulation_context is not None:
             # Try to get num_envs from the simulation context's scene if available
             num_envs = 0
-            if hasattr(simulation_context, "scene") and simulation_context.scene is not None:
-                if hasattr(simulation_context.scene, "num_envs"):
-                    num_envs = simulation_context.scene.num_envs
+            if hasattr(self._simulation_context, "scene") and self._simulation_context.scene is not None:
+                if hasattr(self._simulation_context.scene, "num_envs"):
+                    num_envs = self._simulation_context.scene.num_envs
 
             # Detect physics backend (could be extended to check actual backend type)
             physics_backend = "newton"  # Default for now, could be made more sophisticated
@@ -74,6 +101,37 @@ class OVVisualizer(Visualizer):
                 "physics_backend": physics_backend,
                 "env_prim_pattern": "/World/envs/env_{}",  # Standard pattern
             }
+
+            self._simulation_context.settings.set_bool("/app/player/playSimulations", False)
+            self._offscreen_render = bool(self._simulation_context.settings.get("/isaaclab/render/offscreen"))
+            self._render_viewport = bool(self._simulation_context.settings.get("/isaaclab/render/active_viewport"))
+            self._has_gui = bool(self._simulation_context.settings.get("/isaaclab/render/active_viewport"))
+            # Set render mode
+            if not self._has_gui and not self._offscreen_render:
+                self.render_mode = RenderMode.NO_GUI_OR_RENDERING
+            elif not self._has_gui and self._offscreen_render:
+                self.render_mode = RenderMode.PARTIAL_RENDERING
+            else:
+                self.render_mode = RenderMode.FULL_RENDERING
+
+            # enable viewport updates if GUI is enabled
+            if self._has_gui:
+                try:
+                    import omni.ui as ui
+                    from omni.kit.viewport.utility import get_active_viewport
+                    self._viewport_context = get_active_viewport()
+                    self._viewport_context.updates_enabled = True
+                    self._viewport_window = ui.Workspace.get_window("Viewport")
+                except (ImportError, AttributeError):
+                    pass
+
+            # Disable viewport for offscreen-only rendering
+            if not self._render_viewport and self._offscreen_render:
+                try:
+                    from omni.kit.viewport.utility import get_active_viewport
+                    get_active_viewport().updates_enabled = False
+                except (ImportError, AttributeError):
+                    pass
 
         self._ensure_simulation_app()
         self._setup_viewport(usd_stage, metadata)
@@ -90,6 +148,16 @@ class OVVisualizer(Visualizer):
             return
         self._sim_time += dt
         self._step_counter += 1
+        if self._current_render_mode != self.render_mode:
+            self.set_render_mode(self.render_mode)
+            self._current_render_mode = self.render_mode
+        self._simulation_context.settings.set_bool("/app/player/playSimulations", False)
+        omni.kit.app.get_app().update()
+
+        # Restore CUDA device after app.update()
+        if "cuda" in self._simulation_context.device:
+            import torch
+            torch.cuda.set_device(self._simulation_context.device)
 
     def close(self) -> None:
         """Clean up visualizer resources."""
@@ -104,9 +172,9 @@ class OVVisualizer(Visualizer):
 
     def is_running(self) -> bool:
         """Check if visualizer is running."""
-        if self._simulation_app is None:
-            return False
-        return self._simulation_app.is_running()
+        if self._simulation_app is not None:
+            return self._simulation_app.is_running()
+        return self._simulation_app_running
 
     def is_training_paused(self) -> bool:
         """Check if training is paused (always False for OV)."""
@@ -155,6 +223,20 @@ class OVVisualizer(Visualizer):
 
         self._set_viewport_camera(tuple(eye), tuple(target))
 
+    def set_render_mode(self, mode: int) -> None:
+        """Set the render mode."""
+        if mode == RenderMode.FULL_RENDERING:
+            self._viewport_context.updates_enabled = True  # pyright: ignore [reportOptionalMemberAccess]
+            self._viewport_window.visible = True  # pyright: ignore [reportOptionalMemberAccess]
+        elif mode in (RenderMode.PARTIAL_RENDERING, RenderMode.NO_RENDERING):
+            if self._viewport_context:
+                self._viewport_context.updates_enabled = False
+                self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
+            if mode == RenderMode.NO_RENDERING:
+                self._render_throttle_counter = 0
+        else:
+            raise ValueError(f"Unsupported render mode: {mode}")
+
     # ------------------------------------------------------------------
     # Private methods
     # ------------------------------------------------------------------
@@ -199,8 +281,9 @@ class OVVisualizer(Visualizer):
                 else:
                     # App is running but we couldn't get SimulationApp instance
                     # This is okay - we can still use omni APIs
+                    
                     logger.info("[OVVisualizer] Isaac Sim app is running (via omni.kit.app).")
-
+                self._simulation_app_running = True
             except ImportError:
                 # SimulationApp not available, but omni.kit.app is running
                 logger.info("[OVVisualizer] Using running Isaac Sim app (SimulationApp module not available).")
