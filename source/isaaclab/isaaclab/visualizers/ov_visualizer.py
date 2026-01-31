@@ -144,7 +144,7 @@ class OVVisualizer(Visualizer):
         .. code-block:: python
 
             # Set camera to look at the origin from position (2.5, 2.5, 2.5)
-            >>> visualizer.set_camera_view(
+            >>> visualizer._visualizer_interface.set_camera_view(
             ...     eye=[2.5, 2.5, 2.5],
             ...     target=[0.0, 0.0, 0.0],
             ... )
@@ -381,7 +381,7 @@ class OVVisualizer(Visualizer):
                 camera_path = "/OmniverseKit_Persp"  # Default camera
 
             # Use Isaac Sim utility to set camera view
-            vp_utils.set_camera_view(
+            vp_utils._visualizer_interface.set_camera_view(
                 eye=list(position), target=list(target), camera_prim_path=camera_path, viewport_api=self._viewport_api
             )
 

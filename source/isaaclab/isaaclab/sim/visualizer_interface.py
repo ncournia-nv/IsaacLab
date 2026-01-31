@@ -335,12 +335,12 @@ class VisualizerInterface:
             if hasattr(visualizer, "cfg") and hasattr(visualizer.cfg, "visualizer_type"):
                 if visualizer.cfg.visualizer_type == "omniverse":
                     if hasattr(visualizer, "set_camera_view"):
-                        visualizer.set_camera_view(eye, target)
+                        visualizer._visualizer_interface.set_camera_view(eye, target)
                         return
             # Alternative: check the class name
             if type(visualizer).__name__ == "OVVisualizer":
                 if hasattr(visualizer, "set_camera_view"):
-                    visualizer.set_camera_view(eye, target)
+                    visualizer._visualizer_interface.set_camera_view(eye, target)
                     return
 
         logger.debug("No Omniverse visualizer found - set_camera_view has no effect.")

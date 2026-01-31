@@ -547,26 +547,6 @@ class SimulationContext:
     Operations - New utilities.
     """
 
-    def set_camera_view(
-        self,
-        eye: tuple[float, float, float],
-        target: tuple[float, float, float],
-        camera_prim_path: str = "/OmniverseKit_Persp",
-    ):
-        """Set the location and target of the viewport camera in the stage.
-
-        This method sets the camera view by calling the OVVisualizer's set_camera_view method.
-        If no OVVisualizer is active, this method has no effect.
-
-        Args:
-            eye: The location of the camera eye.
-            target: The location of the camera target.
-            camera_prim_path: The path to the camera primitive in the stage. Defaults to
-                "/OmniverseKit_Persp". Note: This parameter is ignored as the camera path
-                is determined by the active viewport.
-        """
-        self._visualizer_interface.set_camera_view(eye, target, camera_prim_path)
-
     def set_render_mode(self, mode: RenderMode):
         """Change the current render mode of the simulation.
 
@@ -659,22 +639,6 @@ class SimulationContext:
         # Update scene data provider (syncs fabric transforms if needed)
         self._visualizer_interface.update_scene_data()
 
-    def initialize_visualizers(self) -> None:
-        """Initialize visualizers based on the --visualizer command-line flag."""
-        self._visualizer_interface.initialize_visualizers()
-
-    def step_visualizers(self, dt: float) -> None:
-        """Update all active visualizers.
-
-        Args:
-            dt: Time step in seconds.
-        """
-        self._visualizer_interface.step_visualizers(dt)
-
-    def close_visualizers(self) -> None:
-        """Close all active visualizers and clean up resources."""
-        self._visualizer_interface.close_visualizers()
-
     def get_initial_stage(self) -> Usd.Stage:
         """Returns stage handle used during scene creation.
 
@@ -718,7 +682,7 @@ class SimulationContext:
 
         # Initialize visualizers after simulation is set up (only on first reset)
         if not soft and not self._visualizer_interface.visualizers:
-            self.initialize_visualizers()
+            self._visualizer_interface.initialize_visualizers()
 
         self._disable_app_control_on_stop_handle = False
 
@@ -778,7 +742,7 @@ class SimulationContext:
                 NewtonManager.step()
 
         # Update visualizers
-        self.step_visualizers(self.cfg.dt)
+        self._visualizer_interface.step_visualizers(self.cfg.dt)
 
         # app.update() may be changing the cuda device in step, so we force it back to our desired device here
         if "cuda" in self.device:
@@ -972,33 +936,27 @@ class SimulationContext:
         gc.collect()
         return
 
-    @classmethod
-    def clear_instance(cls):
-        """Clear the singleton instance and clean up resources.
+    def clear_instance(self):
+        """Clear the simulation context and clean up resources.
 
         This method should be called when you want to destroy the simulation context
         and create a new one with different settings.
         """
         # clear the callback
-        if cls._instance is not None:
-            if (
-                hasattr(cls._instance, "_app_control_on_stop_handle")
-                and cls._instance._app_control_on_stop_handle is not None
-            ):
-                cls._instance._app_control_on_stop_handle.unsubscribe()
-                cls._instance._app_control_on_stop_handle = None
-            # close all visualizers
-            if hasattr(cls._instance, "_visualizer_interface"):
-                cls._instance.close_visualizers()
-            # clear stage references
-            if hasattr(cls._instance, "_initial_stage"):
-                cls._instance._initial_stage = None
-            if hasattr(cls._instance, "stage"):
-                cls._instance.stage = None
-            # reset initialization flag
-            cls._instance._initialized = False
+        if hasattr(self, "_app_control_on_stop_handle") and self._app_control_on_stop_handle is not None:
+            self._app_control_on_stop_handle.unsubscribe()
+            self._app_control_on_stop_handle = None
+        # close all visualizers
+        self._visualizer_interface.close_visualizers()
+        # clear stage references
+        if hasattr(self, "_initial_stage"):
+            self._initial_stage = None
+        if hasattr(self, "stage"):
+            self.stage = None
+        # reset initialization flag
+        self._initialized = False
         # clear the singleton instance
-        cls._instance = None
+        type(self)._instance = None
         NewtonManager.clear()
 
     """
@@ -1039,32 +997,6 @@ class SimulationContext:
             else:
                 # Needed for backward compatibility with older Isaac Sim versions
                 self._update_fabric = self._fabric_iface.update
-
-    """
-    Callbacks.
-    """
-
-    # def _app_control_on_stop_handle_fn(self, event: carb.events.IEvent):
-    #     """Callback to deal with the app when the simulation is stopped.
-
-    #     Once the simulation is stopped, the physics handles go invalid. After that, it is not possible to
-    #     resume the simulation from the last state. This leaves the app in an inconsistent state, where
-    #     two possible actions can be taken:
-
-    #     1. **Keep the app rendering**: In this case, the simulation is kept running and the app is not shutdown.
-    #        However, the physics is not updated and the script cannot be resumed from the last state. The
-    #        user has to manually close the app to stop the simulation.
-    #     2. **Shutdown the app**: This is the default behavior. In this case, the app is shutdown and
-    #        the simulation is stopped.
-
-    #     Note:
-    #         This callback is used only when running the simulation in a standalone python script. In an extension,
-    #         it is expected that the user handles the extension shutdown.
-    #     """
-    #     if not self._disable_app_control_on_stop_handle:
-    #         while not omni.timeline.get_timeline_interface().is_playing():
-    #             self.render()
-    #     return
 
 
 @contextmanager
