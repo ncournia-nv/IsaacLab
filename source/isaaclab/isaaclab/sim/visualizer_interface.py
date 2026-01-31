@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import enum
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -23,10 +24,45 @@ logger = logging.getLogger(__name__)
 
 class VisualizerInterface:
     """Manages visualizer lifecycle for SimulationContext.
-    
+
     This class handles initialization, stepping, and cleanup of visualizers.
     It delegates to the SimulationContext for settings and state access.
     """
+
+    class RenderMode(enum.IntEnum):
+        """Different rendering modes for the simulation.
+
+        Render modes correspond to how the viewport and other UI elements (such as listeners to keyboard or mouse
+        events) are updated. There are three main components that can be updated when the simulation is rendered:
+
+        1. **UI elements and other extensions**: These are UI elements (such as buttons, sliders, etc.) and other
+        extensions that are running in the background that need to be updated when the simulation is running.
+        2. **Cameras**: These are typically based on Hydra textures and are used to render the scene from different
+        viewpoints. They can be attached to a viewport or be used independently to render the scene.
+        3. **Viewports**: These are windows where you can see the rendered scene.
+
+        Updating each of the above components has a different overhead. For example, updating the viewports is
+        computationally expensive compared to updating the UI elements. Therefore, it is useful to be able to
+        control what is updated when the simulation is rendered. This is where the render mode comes in. There are
+        four different render modes:
+
+        * :attr:`NO_GUI_OR_RENDERING`: The simulation is running without a GUI and off-screen rendering flag is disabled,
+        so none of the above are updated.
+        * :attr:`NO_RENDERING`: No rendering, where only 1 is updated at a lower rate.
+        * :attr:`PARTIAL_RENDERING`: Partial rendering, where only 1 and 2 are updated.
+        * :attr:`FULL_RENDERING`: Full rendering, where everything (1, 2, 3) is updated.
+
+        .. _Viewports: https://docs.omniverse.nvidia.com/extensions/latest/ext_viewport.html
+        """
+
+        NO_GUI_OR_RENDERING = -1
+        """The simulation is running without a GUI and off-screen rendering is disabled."""
+        NO_RENDERING = 0
+        """No rendering, where only other UI elements are updated at a lower rate."""
+        PARTIAL_RENDERING = 1
+        """Partial rendering, where the simulation cameras and UI elements are updated."""
+        FULL_RENDERING = 2
+        """Full rendering, where all the simulation viewports, cameras and UI elements are updated."""
 
     def __init__(self, sim_context: "SimulationContext"):
         """Initialize the visualizer interface.
@@ -398,10 +434,10 @@ class VisualizerInterface:
         if mode is not None:
             self._sim.set_render_mode(mode)
         # render based on the render mode
-        if self._sim.render_mode == self._sim.RenderMode.NO_GUI_OR_RENDERING:
+        if self._sim.render_mode == self.RenderMode.NO_GUI_OR_RENDERING:
             # we never want to render anything here (this is for complete headless mode)
             pass
-        elif self._sim.render_mode == self._sim.RenderMode.NO_RENDERING:
+        elif self._sim.render_mode == self.RenderMode.NO_RENDERING:
             # throttle the rendering frequency to keep the UI responsive
             self._sim._render_throttle_counter += 1
             if self._sim._render_throttle_counter % self._sim._render_throttle_period == 0:

@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import builtins
-import enum
 import gc
 import logging
 import numpy as np
@@ -84,41 +83,6 @@ class SimulationContext:
     # Singleton instance
     _instance: "SimulationContext | None" = None
 
-    class RenderMode(enum.IntEnum):
-        """Different rendering modes for the simulation.
-
-        Render modes correspond to how the viewport and other UI elements (such as listeners to keyboard or mouse
-        events) are updated. There are three main components that can be updated when the simulation is rendered:
-
-        1. **UI elements and other extensions**: These are UI elements (such as buttons, sliders, etc.) and other
-           extensions that are running in the background that need to be updated when the simulation is running.
-        2. **Cameras**: These are typically based on Hydra textures and are used to render the scene from different
-           viewpoints. They can be attached to a viewport or be used independently to render the scene.
-        3. **Viewports**: These are windows where you can see the rendered scene.
-
-        Updating each of the above components has a different overhead. For example, updating the viewports is
-        computationally expensive compared to updating the UI elements. Therefore, it is useful to be able to
-        control what is updated when the simulation is rendered. This is where the render mode comes in. There are
-        four different render modes:
-
-        * :attr:`NO_GUI_OR_RENDERING`: The simulation is running without a GUI and off-screen rendering flag is disabled,
-          so none of the above are updated.
-        * :attr:`NO_RENDERING`: No rendering, where only 1 is updated at a lower rate.
-        * :attr:`PARTIAL_RENDERING`: Partial rendering, where only 1 and 2 are updated.
-        * :attr:`FULL_RENDERING`: Full rendering, where everything (1, 2, 3) is updated.
-
-        .. _Viewports: https://docs.omniverse.nvidia.com/extensions/latest/ext_viewport.html
-        """
-
-        NO_GUI_OR_RENDERING = -1
-        """The simulation is running without a GUI and off-screen rendering is disabled."""
-        NO_RENDERING = 0
-        """No rendering, where only other UI elements are updated at a lower rate."""
-        PARTIAL_RENDERING = 1
-        """Partial rendering, where the simulation cameras and UI elements are updated."""
-        FULL_RENDERING = 2
-        """Full rendering, where all the simulation viewports, cameras and UI elements are updated."""
-
     def __new__(cls, cfg: SimulationCfg | None = None):
         """Enforce singleton pattern by returning existing instance if available.
 
@@ -191,6 +155,9 @@ class SimulationContext:
         # Use settings manager (works in both Omniverse and standalone modes)
         self.settings = SettingsManager.instance()
 
+        # Initialize visualizer interface early (needed for RenderMode access)
+        self._visualizer_interface = VisualizerInterface(self)
+
         # apply carb physics settings
         # SimulationManager._clear()
         self._apply_physics_settings()
@@ -227,14 +194,14 @@ class SimulationContext:
         if not self._has_gui and not self._offscreen_render:
             # set default render mode
             # note: this is the terminal state: cannot exit from this render mode
-            self.render_mode = self.RenderMode.NO_GUI_OR_RENDERING
+            self.render_mode = self._visualizer_interface.RenderMode.NO_GUI_OR_RENDERING
             # set viewport context to None
             self._viewport_context = None
             self._viewport_window = None
         elif not self._has_gui and self._offscreen_render:
             # set default render mode
             # note: this is the terminal state: cannot exit from this render mode
-            self.render_mode = self.RenderMode.PARTIAL_RENDERING
+            self.render_mode = self._visualizer_interface.RenderMode.PARTIAL_RENDERING
             # set viewport context to None
             self._viewport_context = None
             self._viewport_window = None
@@ -245,7 +212,7 @@ class SimulationContext:
 
             # set default render mode
             # note: this can be changed by calling the `set_render_mode` function
-            self.render_mode = self.RenderMode.FULL_RENDERING
+            self.render_mode = self._visualizer_interface.RenderMode.FULL_RENDERING
             # acquire viewport context
             self._viewport_context = get_active_viewport()
             self._viewport_context.updates_enabled = True  # pyright: ignore [reportOptionalMemberAccess]
@@ -289,8 +256,6 @@ class SimulationContext:
 
         self._disable_app_control_on_stop_handle = False
 
-        # initialize visualizer interface
-        self._visualizer_interface = VisualizerInterface(self)
         # flag for skipping prim deletion callback
         # when stage in memory is attached
         self._skip_next_prim_deletion_callback_fn = False
@@ -366,7 +331,7 @@ class SimulationContext:
             pass
         # Disable USD cloning if we are not rendering or using RTX sensors
         NewtonManager._clone_physics_only = (
-            self.render_mode == self.RenderMode.NO_GUI_OR_RENDERING or self.render_mode == self.RenderMode.NO_RENDERING
+            self.render_mode == self._visualizer_interface.RenderMode.NO_GUI_OR_RENDERING or self.render_mode == self._visualizer_interface.RenderMode.NO_RENDERING
         )
 
         # Mark as initialized (singleton pattern)
@@ -547,7 +512,7 @@ class SimulationContext:
     Operations - New utilities.
     """
 
-    def set_render_mode(self, mode: RenderMode):
+    def set_render_mode(self, mode: int):
         """Change the current render mode of the simulation.
 
         Please see :class:`RenderMode` for more information on the different render modes.
@@ -573,15 +538,15 @@ class SimulationContext:
         # check if there is a mode change
         # note: this is mostly needed for GUI when we want to switch between full rendering and no rendering.
         if mode != self.render_mode:
-            if mode == self.RenderMode.FULL_RENDERING:
+            if mode == self._visualizer_interface.RenderMode.FULL_RENDERING:
                 # display the viewport and enable updates
                 self._viewport_context.updates_enabled = True  # pyright: ignore [reportOptionalMemberAccess]
                 self._viewport_window.visible = True  # pyright: ignore [reportOptionalMemberAccess]
-            elif mode == self.RenderMode.PARTIAL_RENDERING:
+            elif mode == self._visualizer_interface.RenderMode.PARTIAL_RENDERING:
                 # hide the viewport and disable updates
                 self._viewport_context.updates_enabled = False  # pyright: ignore [reportOptionalMemberAccess]
                 self._viewport_window.visible = False  # pyright: ignore [reportOptionalMemberAccess]
-            elif mode == self.RenderMode.NO_RENDERING:
+            elif mode == self._visualizer_interface.RenderMode.NO_RENDERING:
                 # hide the viewport and disable updates
                 if self._viewport_context is not None:
                     self._viewport_context.updates_enabled = False  # pyright: ignore [reportOptionalMemberAccess]
@@ -796,7 +761,7 @@ class SimulationContext:
         self._visualizer_interface.on_stop()
         self._is_playing = False
 
-    def render(self, mode: RenderMode | None = None):
+    def render(self, mode: int | None = None):
         """Refreshes the rendering components including UI elements and view-ports depending on the render mode.
 
         This function is used to refresh the rendering components of the simulation. This includes updating the

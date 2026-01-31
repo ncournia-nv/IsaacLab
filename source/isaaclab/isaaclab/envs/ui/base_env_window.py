@@ -154,9 +154,9 @@ class BaseEnvWindow:
                     "label": "Rendering Mode",
                     "type": "dropdown",
                     "default_val": self.env.sim.render_mode.value,
-                    "items": [member.name for member in self.env.sim.RenderMode if member.value >= 0],
-                    "tooltip": "Select a rendering mode\n" + self.env.sim.RenderMode.__doc__,
-                    "on_clicked_fn": lambda value: self.env.sim.set_render_mode(self.env.sim.RenderMode[value]),
+                    "items": [member.name for member in self.env.sim._visualizer_interface.RenderMode if member.value >= 0],
+                    "tooltip": "Select a rendering mode\n" + self.env.sim._visualizer_interface.RenderMode.__doc__,
+                    "on_clicked_fn": lambda value: self.env.sim.set_render_mode(self.env.sim._visualizer_interface.RenderMode[value]),
                 }
                 self.ui_window_elements["render_dropdown"] = isaacsim.gui.components.ui_utils.dropdown_builder(
                     **render_mode_cfg

@@ -270,11 +270,11 @@ class ManagerBasedRLEnv(ManagerBasedEnv, gym.Env):
             return None
         elif self.render_mode == "rgb_array":
             # check that if any render could have happened
-            if self.sim.render_mode.value < self.sim.RenderMode.PARTIAL_RENDERING.value:
+            if self.sim.render_mode.value < self.sim._visualizer_interface.RenderMode.PARTIAL_RENDERING.value:
                 raise RuntimeError(
                     f"Cannot render '{self.render_mode}' when the simulation render mode is"
                     f" '{self.sim.render_mode.name}'. Please set the simulation render mode to:"
-                    f"'{self.sim.RenderMode.PARTIAL_RENDERING.name}' or '{self.sim.RenderMode.FULL_RENDERING.name}'."
+                    f"'{self.sim._visualizer_interface.RenderMode.PARTIAL_RENDERING.name}' or '{self.sim._visualizer_interface.RenderMode.FULL_RENDERING.name}'."
                     " If running headless, make sure --enable_cameras is set."
                 )
             # create the annotator if it does not exist
