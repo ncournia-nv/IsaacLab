@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
@@ -23,178 +23,135 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def set_prim_attr(prim: Usd.Prim, attr_name: str, value, value_type) -> None:
+    """Set or create a prim attribute."""
+    attr = prim.GetAttribute(attr_name)
+    if attr is None or not attr.IsValid():
+        attr = prim.CreateAttribute(attr_name, value_type)
+    attr.Set(value)
+
+
 class PhysicsInterface:
-    """Manages USD physics scene and NewtonManager lifecycle for SimulationContext."""
+    """Manages USD physics scene and Newton physics engine for SimulationContext."""
 
     def __init__(self, sim_context: "SimulationContext"):
-        """Initialize the physics interface.
+        """Initialize physics scene and configure Newton.
 
         Args:
-            sim_context: The simulation context this interface belongs to.
+            sim_context: Parent simulation context.
         """
-        self._sim: Any = sim_context
-
-        # step 0: set physics settings
+        self._sim = sim_context
         self._sim.settings.set("/persistent/omnihydra/useSceneGraphInstancing", True)
-        self._physics_scene = None
-        self._physics_scene_prim = None
-        self._newton_params = self._extract_newton_params()
 
-        # step 1: initialize parameters
+        # Store config values
         self.physics_dt = self._sim.cfg.dt
         self.rendering_dt = self._sim.cfg.dt * self._sim.cfg.render_interval
-        self.backend = "torch"
         self.physics_prim_path = self._sim.cfg.physics_prim_path
         self.device = self._sim.cfg.device
+        self.backend = "torch"
 
-        # create a tensor for gravity
-        # note: this line is needed to create a "tensor" in the device to avoid issues with torch 2.1 onwards.
-        #   the issue is with some heap memory corruption when torch tensor is created inside the asset class.
-        #   you can reproduce the issue by commenting out this line and running the test `test_articulation.py`.
+        # Pre-create gravity tensor to avoid torch heap corruption issues (torch 2.1+)
         self._sim._gravity_tensor = torch.tensor(
             self._sim.cfg.gravity, dtype=torch.float32, device=self._sim.cfg.device
         )
 
-        # step 3: initialize_physics_scene
-        physics_scene_prim = self._sim.stage.GetPrimAtPath(self.physics_prim_path)
-        if not physics_scene_prim.IsValid():
-            self._physics_scene = UsdPhysics.Scene.Define(self._sim.stage, self.physics_prim_path)
-            physics_scene_prim = self._sim.stage.GetPrimAtPath(self.physics_prim_path)
+        self._init_usd_scene()
+        # self._init_physx()
+        self._init_newton()
+
+    def _init_usd_scene(self) -> None:
+        """Create USD physics scene with gravity and timestep."""
+        stage = self._sim.stage
+        cfg = self._sim.cfg
+
+        # Create physics scene prim
+        prim: Usd.Prim = stage.GetPrimAtPath(self.physics_prim_path)
+        if not prim.IsValid():
+            self._physics_scene = UsdPhysics.Scene.Define(stage, self.physics_prim_path)
+            prim = stage.GetPrimAtPath(self.physics_prim_path)
         else:
-            self._physics_scene = UsdPhysics.Scene(physics_scene_prim)
+            self._physics_scene = UsdPhysics.Scene(prim)
 
-        # Set physics dt (time steps per second) using string attribute name
-        self._set_physx_scene_attr(
-            physics_scene_prim, "physxScene:timeStepsPerSecond", int(1.0 / self._sim.cfg.dt), Sdf.ValueTypeNames.Int
-        )
-        self._sim.stage.SetTimeCodesPerSecond(1 / self._sim.cfg.dt)
+        # Set timestep
+        set_prim_attr(prim, "physxScene:timeStepsPerSecond", int(1.0 / cfg.dt), Sdf.ValueTypeNames.Int)
+        stage.SetTimeCodesPerSecond(1 / cfg.dt)
 
-        # Set gravity on the physics scene
-        up_axis = UsdGeom.GetStageUpAxis(self._sim.stage)
-        gravity_magnitude = abs(self._sim.cfg.gravity[2])  # Get magnitude from z-component
+        # Set gravity based on stage up-axis
+        up_axis = UsdGeom.GetStageUpAxis(stage)
+        gravity_magnitude = abs(cfg.gravity[2])
         if up_axis == "Z":
-            gravity_dir = Gf.Vec3f(0.0, 0.0, -1.0 if self._sim.cfg.gravity[2] < 0 else 1.0)
+            gravity_dir = Gf.Vec3f(0.0, 0.0, -1.0 if cfg.gravity[2] < 0 else 1.0)
         elif up_axis == "Y":
-            gravity_dir = Gf.Vec3f(0.0, -1.0 if self._sim.cfg.gravity[1] < 0 else 1.0, 0.0)
+            gravity_dir = Gf.Vec3f(0.0, -1.0 if cfg.gravity[1] < 0 else 1.0, 0.0)
         else:
-            gravity_dir = Gf.Vec3f(-1.0 if self._sim.cfg.gravity[0] < 0 else 1.0, 0.0, 0.0)
+            gravity_dir = Gf.Vec3f(-1.0 if cfg.gravity[0] < 0 else 1.0, 0.0, 0.0)
+        self._physics_scene.CreateGravityDirectionAttr().Set(gravity_dir)
+        self._physics_scene.CreateGravityMagnitudeAttr().Set(gravity_magnitude)
 
-        gravity_direction_attr = self._physics_scene.CreateGravityDirectionAttr()
-        if gravity_direction_attr is None:
-            raise RuntimeError("Failed to create gravity direction attribute.")
-        gravity_direction_attr.Set(gravity_dir)
-        gravity_magnitude_attr = self._physics_scene.CreateGravityMagnitudeAttr()
-        if gravity_magnitude_attr is None:
-            raise RuntimeError("Failed to create gravity magnitude attribute.")
-        gravity_magnitude_attr.Set(gravity_magnitude)
-
-        self._physics_scene_prim = physics_scene_prim
-        self._sim.physics_scene = physics_scene_prim
+        # Store references
+        self._physics_scene_prim = prim
+        self._sim.physics_scene = prim
         self._sim._physics_scene = self._physics_scene
 
-        self.set_physics_sim_device()
-        self.configure_newton()
-        self.create_default_physics_material()
-        self.detach_physx_stage()
-        # Disable USD cloning if we are not rendering or using RTX sensors
-        # Octi: Somehow this is needed, ther maybe mechanism in newton to auto import usdrt and cloen
-        self.update_clone_physics_only()
+    def _init_physx(self) -> None:
+        """Configure PhysX device, material, and detach for Newton-only simulation."""
+        cfg = self._sim.cfg
+        prim = self._physics_scene_prim
 
-    def _extract_newton_params(self) -> dict:
-        to_dict = getattr(self._sim.cfg, "to_dict", None)
-        sim_params = to_dict() if callable(to_dict) else None
-        if not sim_params or not isinstance(sim_params, dict):
-            return {}
-        newton_params = sim_params.get("newton_cfg")
-        if newton_params is None:
-            return {}
-        if isinstance(newton_params, dict):
-            return newton_params
-        return dict(newton_params)
-
-    def _set_physx_scene_attr(self, prim: Usd.Prim, attr_name: str, value, value_type) -> None:
-        """Helper to set a PhysX scene attribute using string-based attribute names.
-
-        Args:
-            prim: The physics scene prim.
-            attr_name: The full attribute name (e.g., "physxScene:timeStepsPerSecond").
-            value: The value to set.
-            value_type: The Sdf.ValueTypeNames type for the attribute.
-        """
-        attr = prim.GetAttribute(attr_name)
-        if attr is None or not attr.IsValid():
-            attr = prim.CreateAttribute(attr_name, value_type)
-        if attr is None:
-            raise RuntimeError(f"Failed to create attribute '{attr_name}' on prim '{prim.GetPath()}'.")
-        attr.Set(value)
-
-    def set_physics_sim_device(self) -> None:
-        """Sets the physics simulation device."""
+        # Configure device (CPU/GPU)
         if "cuda" in self.device:
-            parsed_device = self.device.split(":")
-            if len(parsed_device) == 1:
+            parsed = self.device.split(":")
+            if len(parsed) == 1:
                 device_id = self._sim.settings.get("/physics/cudaDevice", 0)
                 if device_id < 0:
                     self._sim.settings.set_int("/physics/cudaDevice", 0)
                     device_id = 0
-                # resolve "cuda" to "cuda:N" for torch.cuda.set_device compatibility
                 self.device = f"cuda:{device_id}"
                 self._sim.device = self.device
             else:
-                self._sim.settings.set_int("/physics/cudaDevice", int(parsed_device[1]))
+                self._sim.settings.set_int("/physics/cudaDevice", int(parsed[1]))
             self._sim.settings.set_bool("/physics/suppressReadback", True)
-            # Set GPU physics settings using string attribute names
-            self._set_physx_scene_attr(
-                self._sim.physics_scene, "physxScene:broadphaseType", "GPU", Sdf.ValueTypeNames.Token
-            )
-            self._set_physx_scene_attr(
-                self._sim.physics_scene, "physxScene:enableGPUDynamics", True, Sdf.ValueTypeNames.Bool
-            )
+            set_prim_attr(prim, "physxScene:broadphaseType", "GPU", Sdf.ValueTypeNames.Token)
+            set_prim_attr(prim, "physxScene:enableGPUDynamics", True, Sdf.ValueTypeNames.Bool)
         elif self.device.lower() == "cpu":
             self._sim.settings.set_bool("/physics/suppressReadback", False)
-            # Set CPU physics settings using string attribute names
-            self._set_physx_scene_attr(
-                self._sim.physics_scene, "physxScene:broadphaseType", "MBP", Sdf.ValueTypeNames.Token
-            )
-            self._set_physx_scene_attr(
-                self._sim.physics_scene, "physxScene:enableGPUDynamics", False, Sdf.ValueTypeNames.Bool
-            )
+            set_prim_attr(prim, "physxScene:broadphaseType", "MBP", Sdf.ValueTypeNames.Token)
+            set_prim_attr(prim, "physxScene:enableGPUDynamics", False, Sdf.ValueTypeNames.Bool)
         else:
-            raise Exception(f"Device {self.device} is not supported.")
+            raise ValueError(f"Unsupported device: {self.device}")
 
-    def configure_newton(self) -> None:
-        NewtonManager.set_simulation_dt(self._sim.cfg.dt)
-        NewtonManager._gravity_vector = self._sim.cfg.gravity
-        NewtonManager.set_solver_settings(self._newton_params)
-
-    def create_default_physics_material(self) -> None:
-        # create the default physics material
-        # this material is used when no material is specified for a primitive
+        # Create default physics material
         material_path = f"{self.physics_prim_path}/defaultMaterial"
-        self._sim.cfg.physics_material.func(material_path, self._sim.cfg.physics_material)
-        # bind the physics material to the scene
+        cfg.physics_material.func(material_path, cfg.physics_material)
         bind_physics_material(self.physics_prim_path, material_path)
 
-    def detach_physx_stage(self) -> None:
+        # Detach PhysX (for Newton-only simulation)
         try:
             import omni.physx
             from omni.physics.stageupdate import get_physics_stage_update_node_interface
-
-            physx_sim_interface = omni.physx.get_physx_simulation_interface()
-            physx_sim_interface.detach_stage()
+            omni.physx.get_physx_simulation_interface().detach_stage()
             get_physics_stage_update_node_interface().detach_node()
         except Exception:
             pass
 
-    def update_clone_physics_only(self) -> None:
-        render_mode = self._sim._visualizer_interface.render_mode
-        NewtonManager._clone_physics_only = render_mode in (
-            self._sim._visualizer_interface.RenderMode.NO_GUI_OR_RENDERING,
-            self._sim._visualizer_interface.RenderMode.NO_RENDERING,
-        )
+    def _init_newton(self) -> None:
+        """Configure Newton physics engine."""
+        cfg = self._sim.cfg
+        NewtonManager.set_simulation_dt(cfg.dt)
+        NewtonManager._gravity_vector = cfg.gravity
 
-    def set_gravity(self, gravity_vector: tuple[float, float, float]) -> None:
-        NewtonManager._gravity_vector = gravity_vector
+        # Extract newton params from config
+        to_dict = getattr(cfg, "to_dict", None)
+        params = to_dict() if callable(to_dict) else {}
+        newton_cfg = params.get("newton_cfg", {}) if isinstance(params, dict) else {}
+        NewtonManager.set_solver_settings(dict(newton_cfg) if newton_cfg else {})
+
+        # Disable USD cloning in headless mode
+        RenderMode = self._sim._visualizer_interface.RenderMode
+        NewtonManager._clone_physics_only = self._sim._visualizer_interface.render_mode in (
+            RenderMode.NO_GUI_OR_RENDERING,
+            RenderMode.NO_RENDERING,
+        )
 
     def reset(self, soft: bool) -> None:
         """Reset physics simulation.
@@ -203,18 +160,12 @@ class PhysicsInterface:
             soft: If True, skip full reinitialization.
         """
         if not soft:
-            self.start_simulation()
-            self.initialize_solver()
+            NewtonManager.start_simulation()
+            NewtonManager.initialize_solver()
 
     def forward(self) -> None:
         """Update articulation kinematics without stepping physics."""
         NewtonManager.forward_kinematics()
-
-    def start_simulation(self) -> None:
-        NewtonManager.start_simulation()
-
-    def initialize_solver(self) -> None:
-        NewtonManager.initialize_solver()
 
     def step(self) -> None:
         """Step physics simulation."""
@@ -222,4 +173,5 @@ class PhysicsInterface:
             NewtonManager.step()
 
     def close(self) -> None:
+        """Clean up Newton physics resources."""
         NewtonManager.clear()
