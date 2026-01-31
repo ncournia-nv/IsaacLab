@@ -128,7 +128,7 @@ def test_headless_mode():
 #     assert ctypes.c_long.from_address(id(sim)).value == sim_ref_count - 1
 
 
-@pytest.mark.skip(reason="TODO: Gravity setting needs to be fixed in SimulationContext._set_additional_physics_params")
+@pytest.mark.skip(reason="TODO: fix gravity")
 def test_zero_gravity():
     """Test that gravity can be properly disabled."""
     cfg = SimulationCfg(gravity=(0.0, 0.0, 0.0))

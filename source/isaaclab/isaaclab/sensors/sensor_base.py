@@ -245,7 +245,7 @@ class SensorBase(ABC):
             raise RuntimeError("Simulation Context is not initialized!")
         # Obtain device and backend
         self._device = sim.device
-        self._backend = sim.backend
+        self._backend = sim._physics_interface.backend
         self._sim_physics_dt = sim.get_physics_dt()
         self._num_envs = NewtonManager._num_envs
         # Boolean tensor indicating whether the sensor data has to be refreshed
