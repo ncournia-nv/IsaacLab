@@ -514,16 +514,6 @@ class SimulationContext:
         """
         return self._has_gui
 
-    def has_omniverse_visualizer(self) -> bool:
-        """Returns whether the Omniverse visualizer is enabled.
-
-        This checks both the configuration (before initialization) and the active visualizers
-        (after initialization) to determine if the Omniverse visualizer will be or is active.
-
-        Returns:
-            True if the Omniverse visualizer is requested or active, False otherwise.
-        """
-        return self._visualizer_interface.has_omniverse_visualizer()
 
     def has_rtx_sensors(self) -> bool:
         """Returns whether the simulation has any RTX-rendering related sensors.
@@ -835,7 +825,7 @@ class SimulationContext:
     def play(self):
         """Starts the simulation."""
 
-        if self.has_omniverse_visualizer():
+        if self._visualizer_interface.has_omniverse_visualizer():
             import omni.kit.app
             import omni.timeline
 
@@ -849,7 +839,7 @@ class SimulationContext:
         """Stops the simulation."""
 
         # this only applies for omniverse mode
-        if self.has_omniverse_visualizer():
+        if self._visualizer_interface.has_omniverse_visualizer():
             import omni.kit.app
             import omni.timeline
 
@@ -872,7 +862,7 @@ class SimulationContext:
         """
 
         # pass if omniverse is not running
-        if not self.has_omniverse_visualizer():
+        if not self._visualizer_interface.has_omniverse_visualizer():
             return
 
         import omni.kit.app
@@ -936,7 +926,7 @@ class SimulationContext:
             0.016666666666666666
         """
 
-        if not self.has_omniverse_visualizer():
+        if not self._visualizer_interface.has_omniverse_visualizer():
             return self.cfg.dt
 
         if self.stage is None:
