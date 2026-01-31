@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from isaaclab.visualizers import NewtonVisualizerCfg, OVVisualizerCfg, RerunVisualizerCfg, Visualizer
 
 from .scene_data_provider import SceneDataProvider
+from .utils import raise_callback_exception_if_any
 
 if TYPE_CHECKING:
     from .simulation_context import SimulationContext
@@ -366,12 +367,15 @@ class VisualizerInterface:
     def step_visualizers(self, dt: float) -> None:
         """Update all active visualizers.
 
-        This method steps all initialized visualizers and updates their state.
+        This method syncs scene data and steps all initialized visualizers.
         It also handles visualizer pause states and removes closed visualizers.
 
         Args:
             dt: Time step in seconds.
         """
+        # Sync scene data before stepping visualizers
+        self._update_scene_data()
+
         if not self._visualizers:
             return
 
@@ -500,8 +504,8 @@ class VisualizerInterface:
 
         logger.debug("No Omniverse visualizer found - set_camera_view has no effect.")
 
-    def update_scene_data(self) -> None:
-        """Update scene data provider (syncs fabric transforms if needed)."""
+    def _update_scene_data(self) -> None:
+        """Update scene data provider (syncs simulation data for visualizers)."""
         if self._scene_data_provider:
             self._scene_data_provider.update()
 
@@ -536,19 +540,14 @@ class VisualizerInterface:
         Returns:
             True if rendering was handled, False otherwise.
         """
-        import builtins
-
         # pass if omniverse is not running
         if not self.has_omniverse_visualizer():
             return False
 
         import omni.kit.app
 
-        # check if we need to raise an exception that was raised in a callback
-        if builtins.ISAACLAB_CALLBACK_EXCEPTION is not None:
-            exception_to_raise = builtins.ISAACLAB_CALLBACK_EXCEPTION
-            builtins.ISAACLAB_CALLBACK_EXCEPTION = None
-            raise exception_to_raise
+        raise_callback_exception_if_any()
+
         # check if we need to change the render mode
         if mode is not None:
             self.set_render_mode(mode)
@@ -566,11 +565,7 @@ class VisualizerInterface:
                 self.settings.set_bool("/app/player/playSimulations", False)
                 omni.kit.app.get_app().update()
         else:
-            # manually flush the fabric data to update Hydra textures
-            self.update_scene_data()
             # render the simulation
-            # note: we don't call super().render() anymore because they do above operation inside
-            #  and we don't want to do it twice. We may remove it once we drop support for Isaac Sim 2022.2.
             self.settings.set_bool("/app/player/playSimulations", False)
             omni.kit.app.get_app().update()
 
@@ -583,15 +578,12 @@ class VisualizerInterface:
 
     def get_rendering_dt(self) -> float | None:
         """Get the current rendering dt for OV mode.
-        
+
         Returns:
             The rendering dt if OV mode, None otherwise.
         """
         if not self.has_omniverse_visualizer():
             return None
-
-        if self.stage is None:
-            raise Exception("There is no stage currently opened")
 
         # Helper function to get dt from frequency
         def _get_dt_from_frequency():

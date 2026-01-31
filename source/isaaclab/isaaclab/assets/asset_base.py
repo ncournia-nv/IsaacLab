@@ -334,9 +334,6 @@ class AssetBase(ABC):
         Note:
             This function is called when the prim is deleted.
         """
-        # skip callback if required
-        if getattr(SimulationContext.instance(), "_skip_next_prim_deletion_callback_fn", False):
-            return
         if prim_path == "/":
             self._clear_callbacks()
             return

@@ -200,11 +200,6 @@ class PhysicsInterface:
         if not soft:
             self.start_simulation()
             self.initialize_solver()
-        # enable kinematic rendering with fabric
-        if self._sim.physics_sim_view:
-            self._sim.physics_sim_view._backend.initialize_kinematic_bodies()
-
-        return started
 
     def forward_kinematics(self) -> None:
         NewtonManager.forward_kinematics()
@@ -222,13 +217,6 @@ class PhysicsInterface:
         """Step Newton physics for the current simulation step."""
         if self._sim.is_playing():
             self.step()
-
-    def render(self) -> None:
-        render_fn = getattr(NewtonManager, "render", None)
-        if callable(render_fn):
-            render_fn()
-        else:
-            logger.debug("Newton render requested, but NewtonManager.render is unavailable.")
 
     def clear(self) -> None:
         NewtonManager.clear()

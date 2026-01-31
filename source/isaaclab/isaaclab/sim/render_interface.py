@@ -33,6 +33,7 @@ class RenderInterface:
         self.apply_render_settings_from_cfg()
         # Load fabric interface if enabled
         # self.load_fabric_interface()
+
     def apply_render_settings_from_cfg(self):
         """Sets rtx settings specified in the RenderCfg."""
         rendering_setting_name_mapping = {
@@ -139,11 +140,6 @@ class RenderInterface:
             if ov_dt is not None:
                 return ov_dt
         return self._sim.cfg.dt
-
-    def update_scene_data(self) -> None:
-        if self._visualizer_interface is None:
-            return
-        self._visualizer_interface.update_scene_data()
 
     def on_play(self) -> None:
         if self._visualizer_interface is None:

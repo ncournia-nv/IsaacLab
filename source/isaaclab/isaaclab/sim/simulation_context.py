@@ -24,7 +24,7 @@ import isaaclab.sim.utils.stage as stage_utils
 
 # Import settings manager for both Omniverse and standalone modes
 from isaaclab.app.settings_manager import SettingsManager
-from isaaclab.sim.utils import create_new_stage_in_memory
+from isaaclab.sim.utils import create_new_stage_in_memory, raise_callback_exception_if_any
 from .physics_interface import PhysicsInterface
 from .render_interface import RenderInterface
 from .simulation_cfg import SimulationCfg
@@ -145,14 +145,7 @@ class SimulationContext:
         # define a global variable to store the exceptions raised in the callback stack
         builtins.ISAACLAB_CALLBACK_EXCEPTION = None
 
-        # flag for skipping prim deletion callback
-        # when stage in memory is attached
-        self._skip_next_prim_deletion_callback_fn = False
-
         self._is_playing = False
-        self.physics_sim_view = None
-
-        # Mark as initialized (singleton pattern)
         self._initialized = True
 
     def set_setting(self, name: str, value: Any):
@@ -198,20 +191,15 @@ class SimulationContext:
     def forward(self) -> None:
         """Updates articulation kinematics and scene data for rendering."""
         self._physics_interface.forward_kinematics()
-        # Update scene data provider (syncs fabric transforms if needed)
-        self._visualizer_interface.update_scene_data()
+        # Sync scene data for visualizers (with dt=0 since no physics step)
+        self._visualizer_interface.step_visualizers(0.0)
 
     """
     Operations - Override (standalone)
     """
 
     def reset(self, soft: bool = False):
-        # # check if we need to raise an exception that was raised in a callback
-        # if builtins.ISAACLAB_CALLBACK_EXCEPTION is not None:
-        #     exception_to_raise = builtins.ISAACLAB_CALLBACK_EXCEPTION
-        #     builtins.ISAACLAB_CALLBACK_EXCEPTION = None
-        #     raise exception_to_raise
-
+        raise_callback_exception_if_any()
         self._physics_interface.reset(soft)
         self._visualizer_interface.reset(soft)
         self._is_playing = True
@@ -226,54 +214,16 @@ class SimulationContext:
             render: Whether to render the scene after stepping the physics simulation.
                     If set to False, the scene is not rendered and only the physics simulation is stepped.
         """
-        # check if we need to raise an exception that was raised in a callback
-        if builtins.ISAACLAB_CALLBACK_EXCEPTION is not None:
-            exception_to_raise = builtins.ISAACLAB_CALLBACK_EXCEPTION
-            builtins.ISAACLAB_CALLBACK_EXCEPTION = None
-            raise exception_to_raise
+        raise_callback_exception_if_any()
 
-        # check if the simulation timeline is paused. in that case keep stepping until it is playing
-        if not self.is_playing():
-            # step the simulator (but not the physics) to have UI still active
-            while not self.is_playing():
-                self._visualizer_interface.render(mode=None)
-                # meantime if someone stops, break out of the loop
-                if self.is_stopped():
-                    break
-            # need to do one step to refresh the app
-            # reason: physics has to parse the scene again and inform other extensions like hydra-delegate.
-            #   without this the app becomes unresponsive.
-            # FIXME: This steps physics as well, which we is not good in general.
-            import omni.kit.app
-
-            self.settings.set_bool("/app/player/playSimulations", False)
-            omni.kit.app.get_app().update()
-
-        # step the simulation
-        if self.stage is None:
-            raise Exception("There is no stage currently opened, init_stage needed before calling this func")
+        # Keep UI responsive while paused
+        while not self.is_playing():
+            self._visualizer_interface.render(mode=None)
 
         self._physics_interface.step_simulation()
+        self._visualizer_interface.step_visualizers(self.cfg.dt)  # Sync + step first
         if render:
-            self._visualizer_interface.render(mode=None)
-        self._visualizer_interface.step_visualizers(self.cfg.dt)
-
-    def step_warp(self, render: bool = True):
-        """Steps the simulation.
-
-        .. note::
-            This function blocks if the timeline is paused. It only returns when the timeline is playing.
-
-        Args:
-            render: Whether to render the scene after stepping the physics simulation.
-                    If set to False, the scene is not rendered and only the physics simulation is stepped.
-        """
-
-        self._physics_interface.step_simulation()
-        if render:
-            self._visualizer_interface.render(mode=None)
-        if self.cfg.enable_newton_rendering:
-            self._physics_interface.render()
+            self._visualizer_interface.render(mode=None)  # Display last
 
     def is_playing(self) -> bool:
         """Checks if the simulation is playing.
@@ -475,12 +425,7 @@ def build_simulation_context(
         if not sim._visualizer_interface.has_gui():
             # Stop simulation only if we aren't rendering otherwise the app will hang indefinitely
             sim.stop()
-
         # Clear the stage
         sim.clear_all_callbacks()
         sim.clear_instance()
-        # check if we need to raise an exception that was raised in a callback
-        if builtins.ISAACLAB_CALLBACK_EXCEPTION is not None:
-            exception_to_raise = builtins.ISAACLAB_CALLBACK_EXCEPTION
-            builtins.ISAACLAB_CALLBACK_EXCEPTION = None
-            raise exception_to_raise
+        raise_callback_exception_if_any()
