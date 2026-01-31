@@ -236,9 +236,3 @@ class SimulationCfg:
             RerunVisualizerCfg(server_address="127.0.0.1:9876")
         ])
     """
-
-    create_stage_in_memory: bool = False
-    """If stage is first created in memory. Default is False.
-
-    Creating the stage in memory can reduce start-up time.
-    """

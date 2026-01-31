@@ -124,32 +124,10 @@ class SimulationContext:
         cfg.validate()
         self.cfg = cfg
 
-        # create or get stage using USD core APIs
-        if self.cfg.create_stage_in_memory:
-            # Create new stage in memory using USD core API
-            self._initial_stage = create_new_stage_in_memory()
-        else:
-            # Try to get existing stage from USD StageCache
-            stage_cache = UsdUtils.StageCache.Get()
-            if stage_cache.Size() > 0:
-                all_stages = stage_cache.GetAllStages()
-                if all_stages:
-                    self._initial_stage = all_stages[0]
-                else:
-                    raise RuntimeError("No USD stage found in StageCache. Please create a stage first.")
-            else:
-                # No stage exists, try omni.usd as fallback
-                try:
-                    import omni.usd
-
-                    self._initial_stage = omni.usd.get_context().get_stage()
-                except (ImportError, AttributeError):
-                    # if we need to create a new stage outside of omni.usd, we have to do it in memory with USD core APIs
-                    self._initial_stage = create_new_stage_in_memory()
-                    # raise RuntimeError("No USD stage is currently open. Please create a stage first.")
-
-        # Store stage reference for easy access
-        self.stage = self._initial_stage
+        # get existing stage or create new one in memory
+        stage_cache = UsdUtils.StageCache.Get()
+        all_stages = stage_cache.GetAllStages() if stage_cache.Size() > 0 else []
+        self.stage = all_stages[0] if all_stages else create_new_stage_in_memory()
 
         # acquire settings interface
         # Use settings manager (works in both Omniverse and standalone modes)
@@ -604,14 +582,6 @@ class SimulationContext:
         # Update scene data provider (syncs fabric transforms if needed)
         self._visualizer_interface.update_scene_data()
 
-    def get_initial_stage(self) -> Usd.Stage:
-        """Returns stage handle used during scene creation.
-
-        Returns:
-            The stage used during scene creation.
-        """
-        return self._initial_stage
-
     """
     Operations - Override (standalone)
     """
@@ -838,8 +808,6 @@ class SimulationContext:
         # close all visualizers
         self._visualizer_interface.close_visualizers()
         # clear stage references
-        if hasattr(self, "_initial_stage"):
-            self._initial_stage = None
         if hasattr(self, "stage"):
             self.stage = None
         # reset initialization flag
