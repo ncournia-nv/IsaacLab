@@ -27,11 +27,12 @@ class RenderInterface:
     def __init__(self, sim_context: "SimulationContext", visualizer_interface: "VisualizerInterface | None" = None):
         self._sim = sim_context
         self._visualizer_interface = visualizer_interface
+        # Fabric interface for flushing data to Hydra
+        self._fabric_iface = None
+        self._update_fabric = None
         self.apply_render_settings_from_cfg()
-
-    def attach_visualizer(self, visualizer_interface: "VisualizerInterface") -> None:
-        self._visualizer_interface = visualizer_interface
-
+        # Load fabric interface if enabled
+        # self.load_fabric_interface()
     def apply_render_settings_from_cfg(self):
         """Sets rtx settings specified in the RenderCfg."""
         rendering_setting_name_mapping = {
@@ -109,24 +110,23 @@ class RenderInterface:
 
     def is_fabric_enabled(self) -> bool:
         """Returns whether the fabric interface is enabled."""
-        return self._sim._fabric_iface is not None
+        return self._fabric_iface is not None
 
     def load_fabric_interface(self):
         """Loads the fabric interface if enabled."""
         if self._sim.cfg.use_fabric:
             from omni.physxfabric import get_physx_fabric_interface
-
             # acquire fabric interface
-            self._sim._fabric_iface = get_physx_fabric_interface()
-            if hasattr(self._sim._fabric_iface, "force_update"):
+            self._fabric_iface = get_physx_fabric_interface()
+            if hasattr(self._fabric_iface, "force_update"):
                 # The update method in the fabric interface only performs an update if a physics step has occurred.
                 # However, for rendering, we need to force an update since any element of the scene might have been
                 # modified in a reset (which occurs after the physics step) and we want the renderer to be aware of
                 # these changes.
-                self._sim._update_fabric = self._sim._fabric_iface.force_update
+                self._update_fabric = self._fabric_iface.force_update
             else:
                 # Needed for backward compatibility with older Isaac Sim versions
-                self._sim._update_fabric = self._sim._fabric_iface.update
+                self._update_fabric = self._fabric_iface.update
 
     def render(self, mode: int | None = None):
         if self._visualizer_interface is None:

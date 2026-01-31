@@ -136,13 +136,8 @@ class SimulationContext:
 
         # override enable scene querying if rendering is enabled
         # this is needed for some GUI features
-        if self._visualizer_interface._has_gui:
+        if self._visualizer_interface.has_gui():
             self.cfg.enable_scene_query_support = True
-        # set up flatcache/fabric interface (default is None)
-        # this is needed to flush the flatcache data into Hydra manually when calling `render()`
-        # ref: https://docs.omniverse.nvidia.com/prod_extensions/prod_extensions/ext_physics.html
-        # note: need to do this here because super().__init__ calls render and this variable is needed
-        self._fabric_iface = None
         # read isaac sim version (this includes build tag, release tag etc.)
         # note: we do it once here because it reads the VERSION file from disk and is not expected to change.
         # self._isaacsim_version = get_version()
@@ -217,9 +212,9 @@ class SimulationContext:
         #     builtins.ISAACLAB_CALLBACK_EXCEPTION = None
         #     raise exception_to_raise
 
-        if self._physics_interface.reset(soft):
-            self._is_playing = True
+        self._physics_interface.reset(soft)
         self._visualizer_interface.reset(soft)
+        self._is_playing = True
 
     def step(self, render: bool = True):
         """Steps the simulation.
@@ -241,7 +236,7 @@ class SimulationContext:
         if not self.is_playing():
             # step the simulator (but not the physics) to have UI still active
             while not self.is_playing():
-                self.render()
+                self._visualizer_interface.render(mode=None)
                 # meantime if someone stops, break out of the loop
                 if self.is_stopped():
                     break

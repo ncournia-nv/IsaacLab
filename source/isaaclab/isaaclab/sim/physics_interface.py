@@ -197,11 +197,9 @@ class PhysicsInterface:
         NewtonManager._gravity_vector = gravity_vector
 
     def reset(self, soft: bool) -> bool:
-        started = False
         if not soft:
             self.start_simulation()
             self.initialize_solver()
-            started = True
         # enable kinematic rendering with fabric
         if self._sim.physics_sim_view:
             self._sim.physics_sim_view._backend.initialize_kinematic_bodies()
