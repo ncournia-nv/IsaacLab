@@ -6,15 +6,10 @@
 import builtins
 import gc
 import logging
-import os
-import toml
-import torch
 import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-
-import flatdict
 
 # import omni.physx
 # import omni.usd
@@ -31,6 +26,7 @@ import isaaclab.sim.utils.stage as stage_utils
 from isaaclab.app.settings_manager import SettingsManager
 from isaaclab.sim.utils import create_new_stage_in_memory
 from .physics_interface import PhysicsInterface
+from .render_interface import RenderInterface
 from .simulation_cfg import SimulationCfg
 from .visualizer_interface import VisualizerInterface
 from .spawners import DomeLightCfg, GroundPlaneCfg
@@ -132,12 +128,11 @@ class SimulationContext:
         self.settings = SettingsManager.instance()
 
         # Initialize visualizer interface early (needed for RenderMode access)
-        self._visualizer_interface = VisualizerInterface(self)
+        self._visualizer_interface: VisualizerInterface = VisualizerInterface(self)
+        # Initialize render interface for rendering configuration
+        self._render_interface: RenderInterface = RenderInterface(self)
         # Initialize physics interface early to configure physics and Newton
-        self._physics_interface = PhysicsInterface(self)
-
-        # apply render settings from render config
-        self._apply_render_settings_from_cfg()
+        self._physics_interface: PhysicsInterface = PhysicsInterface(self)
 
         # override enable scene querying if rendering is enabled
         # this is needed for some GUI features
@@ -155,8 +150,6 @@ class SimulationContext:
         # define a global variable to store the exceptions raised in the callback stack
         builtins.ISAACLAB_CALLBACK_EXCEPTION = None
 
-        self._disable_app_control_on_stop_handle = False
-
         # flag for skipping prim deletion callback
         # when stage in memory is attached
         self._skip_next_prim_deletion_callback_fn = False
@@ -164,120 +157,8 @@ class SimulationContext:
         self._is_playing = False
         self.physics_sim_view = None
 
-        self.settings.set_bool("/app/player/playSimulations", False)
-
         # Mark as initialized (singleton pattern)
         self._initialized = True
-
-    def _apply_render_settings_from_cfg(self):
-        """Sets rtx settings specified in the RenderCfg."""
-
-        # define mapping of user-friendly RenderCfg names to native carb names
-        rendering_setting_name_mapping = {
-            "enable_translucency": "/rtx/translucency/enabled",
-            "enable_reflections": "/rtx/reflections/enabled",
-            "enable_global_illumination": "/rtx/indirectDiffuse/enabled",
-            "enable_dlssg": "/rtx-transient/dlssg/enabled",
-            "enable_dl_denoiser": "/rtx-transient/dldenoiser/enabled",
-            "dlss_mode": "/rtx/post/dlss/execMode",
-            "enable_direct_lighting": "/rtx/directLighting/enabled",
-            "samples_per_pixel": "/rtx/directLighting/sampledLighting/samplesPerPixel",
-            "enable_shadows": "/rtx/shadows/enabled",
-            "enable_ambient_occlusion": "/rtx/ambientOcclusion/enabled",
-        }
-
-        not_carb_settings = ["rendering_mode", "carb_settings", "antialiasing_mode"]
-
-        # set preset settings (same behavior as the CLI arg --rendering_mode)
-        rendering_mode = self.cfg.render_cfg.rendering_mode
-        if rendering_mode is not None:
-            # check if preset is supported
-            supported_rendering_modes = ["performance", "balanced", "quality"]
-            if rendering_mode not in supported_rendering_modes:
-                raise ValueError(
-                    f"RenderCfg rendering mode '{rendering_mode}' not in supported modes {supported_rendering_modes}."
-                )
-
-            # parse preset file
-            import carb
-
-            repo_path = os.path.join(carb.tokens.get_tokens_interface().resolve("${app}"), "..")
-            preset_filename = os.path.join(repo_path, f"apps/rendering_modes/{rendering_mode}.kit")
-            with open(preset_filename) as file:
-                preset_dict = toml.load(file)
-            preset_dict = dict(flatdict.FlatDict(preset_dict, delimiter="."))
-
-            # set presets
-            for key, value in preset_dict.items():
-                key = "/" + key.replace(".", "/")  # convert to carb setting format
-                self.settings.set(key, value)
-
-        # set user-friendly named settings
-        for key, value in vars(self.cfg.render_cfg).items():
-            if value is None or key in not_carb_settings:
-                # skip unset settings and non-carb settings
-                continue
-            if key not in rendering_setting_name_mapping:
-                raise ValueError(
-                    f"'{key}' in RenderCfg not found. Note: internal 'rendering_setting_name_mapping' dictionary might"
-                    " need to be updated."
-                )
-            key = rendering_setting_name_mapping[key]
-            self.settings.set(key, value)
-
-        # set general carb settings
-        carb_settings = self.cfg.render_cfg.carb_settings
-        if carb_settings is not None:
-            for key, value in carb_settings.items():
-                if "_" in key:
-                    key = "/" + key.replace("_", "/")  # convert from python variable style string
-                elif "." in key:
-                    key = "/" + key.replace(".", "/")  # convert from .kit file style string
-                if self.settings.get(key) is None:
-                    raise ValueError(f"'{key}' in RenderCfg.general_parameters does not map to a carb setting.")
-                self.settings.set(key, value)
-
-        # set denoiser mode
-        if self.cfg.render_cfg.antialiasing_mode is not None:
-            try:
-                import omni.replicator.core as rep
-
-                rep.settings.set_render_rtx_realtime(antialiasing=self.cfg.render_cfg.antialiasing_mode)
-            except Exception:
-                pass
-
-        # WAR: Ensure /rtx/renderMode RaytracedLighting is correctly cased.
-        render_mode = self.settings.get("/rtx/rendermode")
-        if render_mode is not None and render_mode.lower() == "raytracedlighting":
-            self.settings.set("/rtx/rendermode", "RaytracedLighting")
-
-    def has_rtx_sensors(self) -> bool:
-        """Returns whether the simulation has any RTX-rendering related sensors.
-
-        This function returns the value of the simulation parameter ``"/isaaclab/render/rtx_sensors"``.
-        The parameter is set to True when instances of RTX-related sensors (cameras or LiDARs) are
-        created using Isaac Lab's sensor classes.
-
-        True if the simulation has RTX sensors (such as USD Cameras or LiDARs).
-
-        For more information, please check `NVIDIA RTX documentation`_.
-
-        .. _NVIDIA RTX documentation: https://developer.nvidia.com/rendering-technologies
-        """
-        return self.settings.get("/isaaclab/render/rtx_sensors")
-
-    def is_fabric_enabled(self) -> bool:
-        """Returns whether the fabric interface is enabled.
-
-        When fabric interface is enabled, USD read/write operations are disabled. Instead all applications
-        read and write the simulation state directly from the fabric interface. This reduces a lot of overhead
-        that occurs during USD read/write operations.
-
-        For more information, please check `Fabric documentation`_.
-
-        .. _Fabric documentation: https://docs.omniverse.nvidia.com/kit/docs/usdrt/latest/docs/usd_fabric_usdrt.html
-        """
-        return self._fabric_iface is not None
 
     def set_setting(self, name: str, value: Any):
         """Set simulation settings using the Carbonite SDK.
@@ -330,39 +211,15 @@ class SimulationContext:
     """
 
     def reset(self, soft: bool = False):
-        self.settings.set_bool("/app/player/playSimulations", False)
-        self._disable_app_control_on_stop_handle = True
         # # check if we need to raise an exception that was raised in a callback
         # if builtins.ISAACLAB_CALLBACK_EXCEPTION is not None:
         #     exception_to_raise = builtins.ISAACLAB_CALLBACK_EXCEPTION
         #     builtins.ISAACLAB_CALLBACK_EXCEPTION = None
         #     raise exception_to_raise
 
-        if not soft:
-            # if not self.is_stopped():
-            #     self.stop()
-            self._physics_interface.start_simulation()
-            # self.play()
-            self._physics_interface.initialize_solver()
+        if self._physics_interface.reset(soft):
             self._is_playing = True
-
-        # app.update() may be changing the cuda device in reset, so we force it back to our desired device here
-        if "cuda" in self.device:
-            torch.cuda.set_device(self.device)
-        # enable kinematic rendering with fabric
-        if self.physics_sim_view:
-            self.physics_sim_view._backend.initialize_kinematic_bodies()
-        # perform additional rendering steps to warm up replicator buffers
-        # this is only needed for the first time we set the simulation
-        if not soft:
-            for _ in range(2):
-                self.render()
-
-        # Initialize visualizers after simulation is set up (only on first reset)
-        if not soft and not self._visualizer_interface.visualizers:
-            self._visualizer_interface.initialize_visualizers()
-
-        self._disable_app_control_on_stop_handle = False
+        self._visualizer_interface.reset(soft)
 
     def step(self, render: bool = True):
         """Steps the simulation.
@@ -401,30 +258,10 @@ class SimulationContext:
         if self.stage is None:
             raise Exception("There is no stage currently opened, init_stage needed before calling this func")
 
+        self._physics_interface.step_simulation()
         if render:
-            # physics dt is zero, no need to step physics, just render
-            if self.is_playing():
-                self._physics_interface.step()
-            if self.get_physics_dt() == 0:  # noqa: SIM114
-                self.render()
-            # rendering dt is zero, but physics is not, call step and then render
-            elif self.get_rendering_dt() == 0 and self.get_physics_dt() != 0:  # noqa: SIM114
-                self.render()
-            else:
-                import omni.kit.app
-
-                self.settings.set_bool("/app/player/playSimulations", False)
-                omni.kit.app.get_app().update()
-        else:
-            if self.is_playing():
-                self._physics_interface.step()
-
-        # Update visualizers
+            self._visualizer_interface.render(mode=None)
         self._visualizer_interface.step_visualizers(self.cfg.dt)
-
-        # app.update() may be changing the cuda device in step, so we force it back to our desired device here
-        if "cuda" in self.device:
-            torch.cuda.set_device(self.device)
 
     def step_warp(self, render: bool = True):
         """Steps the simulation.
@@ -437,22 +274,9 @@ class SimulationContext:
                     If set to False, the scene is not rendered and only the physics simulation is stepped.
         """
 
+        self._physics_interface.step_simulation()
         if render:
-            # physics dt is zero, no need to step physics, just render
-            if self.is_playing():
-                self._physics_interface.step()
-            if self.get_physics_dt() == 0:  # noqa: SIM114
-                self.render()
-            # rendering dt is zero, but physics is not, call step and then render
-            elif self.get_rendering_dt() == 0 and self.get_physics_dt() != 0:  # noqa: SIM114
-                self.render()
-            else:
-                self._app.update()
-        else:
-            if self.is_playing():
-                self._physics_interface.step()
-
-        # Use the physics interface to render the scene if enabled
+            self._visualizer_interface.render(mode=None)
         if self.cfg.enable_newton_rendering:
             self._physics_interface.render()
 
@@ -562,23 +386,6 @@ class SimulationContext:
     """
     Helper Functions
     """
-
-    def _load_fabric_interface(self):
-        """Loads the fabric interface if enabled."""
-        if self.cfg.use_fabric:
-            from omni.physxfabric import get_physx_fabric_interface
-
-            # acquire fabric interface
-            self._fabric_iface = get_physx_fabric_interface()
-            if hasattr(self._fabric_iface, "force_update"):
-                # The update method in the fabric interface only performs an update if a physics step has occurred.
-                # However, for rendering, we need to force an update since any element of the scene might have been
-                # modified in a reset (which occurs after the physics step) and we want the renderer to be aware of
-                # these changes.
-                self._update_fabric = self._fabric_iface.force_update
-            else:
-                # Needed for backward compatibility with older Isaac Sim versions
-                self._update_fabric = self._fabric_iface.update
 
 
 @contextmanager

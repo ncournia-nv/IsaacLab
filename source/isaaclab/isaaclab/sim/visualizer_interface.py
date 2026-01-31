@@ -71,6 +71,7 @@ class VisualizerInterface:
             sim_context: The simulation context this interface belongs to.
         """
         self._sim = sim_context
+        self.settings.set_bool("/app/player/playSimulations", False)
         
         # initialize visualizers and scene data provider
         self._visualizers: list[Visualizer] = []
@@ -85,10 +86,23 @@ class VisualizerInterface:
         
         # initialize render mode based on GUI/rendering settings
         self._init_render_mode()
+        self._disable_app_control_on_stop_handle = False
+
+    @property
+    def settings(self):
+        return self._sim.settings
+
+    @property
+    def device(self) -> str:
+        return self._sim.device
+
+    @property
+    def stage(self):
+        return self._sim.stage
 
     def _init_render_mode(self):
         """Initialize render mode based on GUI and rendering settings."""
-        settings = self._sim.settings
+        settings = self.settings
         
         # read GUI flags
         local_gui = settings.get("/app/window/enabled") or False
@@ -406,6 +420,18 @@ class VisualizerInterface:
         self._visualizers.clear()
         logger.info("All visualizers closed")
 
+    def reset(self, soft: bool) -> None:
+        """Handle visualizer warmup and initialization during reset."""
+        self.settings.set_bool("/app/player/playSimulations", False)
+        self._disable_app_control_on_stop_handle = not soft
+        if not soft:
+            for _ in range(2):
+                self.render(mode=None)
+        # Initialize visualizers after simulation is set up (only on first reset)
+        if not soft and not self._visualizers:
+            self.initialize_visualizers()
+        self._disable_app_control_on_stop_handle = False
+
     def has_omniverse_visualizer(self) -> bool:
         """Returns whether the Omniverse visualizer is enabled.
 
@@ -487,7 +513,7 @@ class VisualizerInterface:
 
             omni.timeline.get_timeline_interface().play()
             omni.timeline.get_timeline_interface().commit()
-            self._sim.settings.set_bool("/app/player/playSimulations", False)
+            self.settings.set_bool("/app/player/playSimulations", False)
             omni.kit.app.get_app().update()
 
     def on_stop(self) -> None:
@@ -498,7 +524,7 @@ class VisualizerInterface:
             import omni.timeline
 
             omni.timeline.get_timeline_interface().stop()
-            self._sim.settings.set_bool("/app/player/playSimulations", False)
+            self.settings.set_bool("/app/player/playSimulations", False)
             omni.kit.app.get_app().update()
 
     def render(self, mode) -> bool:
@@ -537,21 +563,21 @@ class VisualizerInterface:
                 self._render_throttle_counter = 0
                 # here we don't render viewport so don't need to flush fabric data
                 # note: we don't call super().render() anymore because they do flush the fabric data
-                self._sim.settings.set_bool("/app/player/playSimulations", False)
+                self.settings.set_bool("/app/player/playSimulations", False)
                 omni.kit.app.get_app().update()
         else:
             # manually flush the fabric data to update Hydra textures
-            self._sim.forward()
+            self.update_scene_data()
             # render the simulation
             # note: we don't call super().render() anymore because they do above operation inside
             #  and we don't want to do it twice. We may remove it once we drop support for Isaac Sim 2022.2.
-            self._sim.settings.set_bool("/app/player/playSimulations", False)
+            self.settings.set_bool("/app/player/playSimulations", False)
             omni.kit.app.get_app().update()
 
         # app.update() may be changing the cuda device, so we force it back to our desired device here
-        if "cuda" in self._sim.device:
+        if "cuda" in self.device:
             import torch
-            torch.cuda.set_device(self._sim.device)
+            torch.cuda.set_device(self.device)
 
         return True
 
@@ -564,15 +590,15 @@ class VisualizerInterface:
         if not self.has_omniverse_visualizer():
             return None
 
-        if self._sim.stage is None:
+        if self.stage is None:
             raise Exception("There is no stage currently opened")
 
         # Helper function to get dt from frequency
         def _get_dt_from_frequency():
-            frequency = self._sim.settings.get("/app/runLoops/main/rateLimitFrequency")
+            frequency = self.settings.get("/app/runLoops/main/rateLimitFrequency")
             return 1.0 / frequency if frequency else 0
 
-        if self._sim.settings.get("/app/runLoops/main/rateLimitEnabled"):
+        if self.settings.get("/app/runLoops/main/rateLimitEnabled"):
             return _get_dt_from_frequency()
 
         try:

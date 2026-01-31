@@ -196,6 +196,18 @@ class PhysicsInterface:
     def set_gravity(self, gravity_vector: tuple[float, float, float]) -> None:
         NewtonManager._gravity_vector = gravity_vector
 
+    def reset(self, soft: bool) -> bool:
+        started = False
+        if not soft:
+            self.start_simulation()
+            self.initialize_solver()
+            started = True
+        # enable kinematic rendering with fabric
+        if self._sim.physics_sim_view:
+            self._sim.physics_sim_view._backend.initialize_kinematic_bodies()
+
+        return started
+
     def forward_kinematics(self) -> None:
         NewtonManager.forward_kinematics()
 
@@ -207,6 +219,11 @@ class PhysicsInterface:
 
     def step(self) -> None:
         NewtonManager.step()
+
+    def step_simulation(self) -> None:
+        """Step Newton physics for the current simulation step."""
+        if self._sim.is_playing():
+            self.step()
 
     def render(self) -> None:
         render_fn = getattr(NewtonManager, "render", None)
