@@ -117,8 +117,8 @@ class SimulationContext:
 
     def forward(self) -> None:
         """Update kinematics and sync scene data without stepping physics."""
-        self._physics_interface.forward_kinematics()
-        self._visualizer_interface.step_visualizers(0.0)
+        self._physics_interface.forward()
+        self._visualizer_interface.forward()
 
     def reset(self, soft: bool = False):
         """Reset the simulation.
@@ -138,15 +138,8 @@ class SimulationContext:
             render: Whether to render the scene after stepping. Defaults to True.
         """
         raise_callback_exception_if_any()
-
-        # Keep UI responsive while paused
-        while not self._is_playing:
-            self._visualizer_interface.render(mode=None)
-
-        self._physics_interface.step_simulation()
-        self._visualizer_interface.step_visualizers(self.cfg.dt)  # Sync + step first
-        if render:
-            self._visualizer_interface.render(mode=None)  # Display last
+        self._physics_interface.step()
+        self._visualizer_interface.step(render=render)
 
     def is_playing(self) -> bool:
         """Returns True if simulation is playing."""
@@ -187,12 +180,8 @@ class SimulationContext:
 
     def clear_instance(self):
         """Clean up resources and clear the singleton instance."""
-        # clear the callback
-        if hasattr(self, "_app_control_on_stop_handle") and self._app_control_on_stop_handle is not None:
-            self._app_control_on_stop_handle.unsubscribe()
-            self._app_control_on_stop_handle = None
-        # close all visualizers
-        self._visualizer_interface.close_visualizers()
+        self._visualizer_interface.close()
+        self._physics_interface.close()
         # clear stage references
         if hasattr(self, "stage"):
             self.stage = None
@@ -200,7 +189,6 @@ class SimulationContext:
         self._initialized = False
         # clear the singleton instance
         type(self)._instance = None
-        self._physics_interface.clear()
 
 
 @contextmanager

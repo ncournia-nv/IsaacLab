@@ -196,12 +196,18 @@ class PhysicsInterface:
     def set_gravity(self, gravity_vector: tuple[float, float, float]) -> None:
         NewtonManager._gravity_vector = gravity_vector
 
-    def reset(self, soft: bool) -> bool:
+    def reset(self, soft: bool) -> None:
+        """Reset physics simulation.
+
+        Args:
+            soft: If True, skip full reinitialization.
+        """
         if not soft:
             self.start_simulation()
             self.initialize_solver()
 
-    def forward_kinematics(self) -> None:
+    def forward(self) -> None:
+        """Update articulation kinematics without stepping physics."""
         NewtonManager.forward_kinematics()
 
     def start_simulation(self) -> None:
@@ -211,12 +217,9 @@ class PhysicsInterface:
         NewtonManager.initialize_solver()
 
     def step(self) -> None:
-        NewtonManager.step()
-
-    def step_simulation(self) -> None:
-        """Step Newton physics for the current simulation step."""
+        """Step physics simulation."""
         if self._sim.is_playing():
-            self.step()
+            NewtonManager.step()
 
-    def clear(self) -> None:
+    def close(self) -> None:
         NewtonManager.clear()

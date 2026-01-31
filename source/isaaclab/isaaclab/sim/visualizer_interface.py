@@ -73,21 +73,23 @@ class VisualizerInterface:
         """
         self._sim = sim_context
         self.settings.set_bool("/app/player/playSimulations", False)
-        
+
         # initialize visualizers and scene data provider
         self._visualizers: list[Visualizer] = []
         self._visualizer_step_counter = 0
         self._scene_data_provider: SceneDataProvider | None = None
-        
+
         # viewport state
         self._viewport_context = None
         self._viewport_window = None
         self._render_throttle_counter = 0
         self._render_throttle_period = 5
-        
+        self.dt = self._sim.cfg.dt
+
         # initialize render mode based on GUI/rendering settings
         self._init_render_mode()
         self._disable_app_control_on_stop_handle = False
+        self._app_control_on_stop_handle = None
 
     @property
     def settings(self):
@@ -364,17 +366,14 @@ class VisualizerInterface:
                     f"Failed to initialize visualizer '{viz_cfg.visualizer_type}' ({type(viz_cfg).__name__}): {e}"
                 )
 
-    def step_visualizers(self, dt: float) -> None:
-        """Update all active visualizers.
-
-        This method syncs scene data and steps all initialized visualizers.
-        It also handles visualizer pause states and removes closed visualizers.
+    def forward(self, dt: float = 0.0) -> None:
+        """Sync scene data and step all active visualizers.
 
         Args:
-            dt: Time step in seconds.
+            dt: Time step in seconds (use 0.0 for kinematics-only updates).
         """
-        # Sync scene data before stepping visualizers
-        self._update_scene_data()
+        if self._scene_data_provider:
+            self._scene_data_provider.update()
 
         if not self._visualizers:
             return
@@ -413,8 +412,13 @@ class VisualizerInterface:
             except Exception as e:
                 logger.error(f"Error closing visualizer: {e}")
 
-    def close_visualizers(self) -> None:
+    def close(self) -> None:
         """Close all active visualizers and clean up resources."""
+        # Unsubscribe from app control events
+        if self._app_control_on_stop_handle is not None:
+            self._app_control_on_stop_handle.unsubscribe()
+            self._app_control_on_stop_handle = None
+
         for visualizer in self._visualizers:
             try:
                 visualizer.close()
@@ -504,10 +508,28 @@ class VisualizerInterface:
 
         logger.debug("No Omniverse visualizer found - set_camera_view has no effect.")
 
-    def _update_scene_data(self) -> None:
-        """Update scene data provider (syncs simulation data for visualizers)."""
-        if self._scene_data_provider:
-            self._scene_data_provider.update()
+    def step(self, render: bool = True) -> None:
+        """Step visualizers and optionally render.
+
+        This method:
+        1. Keeps UI responsive while simulation is paused
+        2. Syncs scene data and steps all visualizers
+        3. Optionally renders the viewport
+
+        Args:
+            dt: Time step in seconds.
+            render: Whether to render after stepping. Defaults to True.
+        """
+        # Keep UI responsive while paused
+        while not self._sim.is_playing():
+            self.render(mode=None)
+
+        # Sync scene data and step visualizers
+        self.forward(self.get_rendering_dt() or self.dt)
+
+        # Render if requested
+        if render:
+            self.render(mode=None)
 
     def on_play(self) -> None:
         """Called when simulation starts - handles OV timeline."""
