@@ -335,12 +335,12 @@ class VisualizerInterface:
             if hasattr(visualizer, "cfg") and hasattr(visualizer.cfg, "visualizer_type"):
                 if visualizer.cfg.visualizer_type == "omniverse":
                     if hasattr(visualizer, "set_camera_view"):
-                        visualizer._visualizer_interface.set_camera_view(eye, target)
+                        visualizer.set_camera_view(eye, target)
                         return
             # Alternative: check the class name
             if type(visualizer).__name__ == "OVVisualizer":
                 if hasattr(visualizer, "set_camera_view"):
-                    visualizer._visualizer_interface.set_camera_view(eye, target)
+                    visualizer.set_camera_view(eye, target)
                     return
 
         logger.debug("No Omniverse visualizer found - set_camera_view has no effect.")
@@ -349,3 +349,110 @@ class VisualizerInterface:
         """Update scene data provider (syncs fabric transforms if needed)."""
         if self._scene_data_provider:
             self._scene_data_provider.update()
+
+    def on_play(self) -> None:
+        """Called when simulation starts - handles OV timeline."""
+        if self.has_omniverse_visualizer():
+            import omni.kit.app
+            import omni.timeline
+
+            omni.timeline.get_timeline_interface().play()
+            omni.timeline.get_timeline_interface().commit()
+            self._sim.settings.set_bool("/app/player/playSimulations", False)
+            omni.kit.app.get_app().update()
+
+    def on_stop(self) -> None:
+        """Called when simulation stops - handles OV timeline."""
+        # this only applies for omniverse mode
+        if self.has_omniverse_visualizer():
+            import omni.kit.app
+            import omni.timeline
+
+            omni.timeline.get_timeline_interface().stop()
+            self._sim.settings.set_bool("/app/player/playSimulations", False)
+            omni.kit.app.get_app().update()
+
+    def render(self, mode) -> bool:
+        """Handle rendering.
+        
+        Args:
+            mode: The rendering mode.
+            
+        Returns:
+            True if rendering was handled, False otherwise.
+        """
+        import builtins
+
+        # pass if omniverse is not running
+        if not self.has_omniverse_visualizer():
+            return False
+
+        import omni.kit.app
+
+        # check if we need to raise an exception that was raised in a callback
+        if builtins.ISAACLAB_CALLBACK_EXCEPTION is not None:
+            exception_to_raise = builtins.ISAACLAB_CALLBACK_EXCEPTION
+            builtins.ISAACLAB_CALLBACK_EXCEPTION = None
+            raise exception_to_raise
+        # check if we need to change the render mode
+        if mode is not None:
+            self._sim.set_render_mode(mode)
+        # render based on the render mode
+        if self._sim.render_mode == self._sim.RenderMode.NO_GUI_OR_RENDERING:
+            # we never want to render anything here (this is for complete headless mode)
+            pass
+        elif self._sim.render_mode == self._sim.RenderMode.NO_RENDERING:
+            # throttle the rendering frequency to keep the UI responsive
+            self._sim._render_throttle_counter += 1
+            if self._sim._render_throttle_counter % self._sim._render_throttle_period == 0:
+                self._sim._render_throttle_counter = 0
+                # here we don't render viewport so don't need to flush fabric data
+                # note: we don't call super().render() anymore because they do flush the fabric data
+                self._sim.settings.set_bool("/app/player/playSimulations", False)
+                omni.kit.app.get_app().update()
+        else:
+            # manually flush the fabric data to update Hydra textures
+            self._sim.forward()
+            # render the simulation
+            # note: we don't call super().render() anymore because they do above operation inside
+            #  and we don't want to do it twice. We may remove it once we drop support for Isaac Sim 2022.2.
+            self._sim.settings.set_bool("/app/player/playSimulations", False)
+            omni.kit.app.get_app().update()
+
+        # app.update() may be changing the cuda device, so we force it back to our desired device here
+        if "cuda" in self._sim.device:
+            import torch
+            torch.cuda.set_device(self._sim.device)
+
+        return True
+
+    def get_rendering_dt(self) -> float | None:
+        """Get the current rendering dt for OV mode.
+        
+        Returns:
+            The rendering dt if OV mode, None otherwise.
+        """
+        if not self.has_omniverse_visualizer():
+            return None
+
+        if self._sim.stage is None:
+            raise Exception("There is no stage currently opened")
+
+        # Helper function to get dt from frequency
+        def _get_dt_from_frequency():
+            frequency = self._sim.settings.get("/app/runLoops/main/rateLimitFrequency")
+            return 1.0 / frequency if frequency else 0
+
+        if self._sim.settings.get("/app/runLoops/main/rateLimitEnabled"):
+            return _get_dt_from_frequency()
+
+        try:
+            import omni.kit.loop._loop as omni_loop
+
+            _loop_runner = omni_loop.acquire_loop_interface()
+            if _loop_runner.get_manual_mode():
+                return _loop_runner.get_manual_step_size()
+            else:
+                return _get_dt_from_frequency()
+        except Exception:
+            return _get_dt_from_frequency()

@@ -788,28 +788,12 @@ class SimulationContext:
 
     def play(self):
         """Starts the simulation."""
-
-        if self._visualizer_interface.has_omniverse_visualizer():
-            import omni.kit.app
-            import omni.timeline
-
-            omni.timeline.get_timeline_interface().play()
-            omni.timeline.get_timeline_interface().commit()
-            self.settings.set_bool("/app/player/playSimulations", False)
-            omni.kit.app.get_app().update()
+        self._visualizer_interface.on_play()
         self._is_playing = True
 
     def stop(self):
         """Stops the simulation."""
-
-        # this only applies for omniverse mode
-        if self._visualizer_interface.has_omniverse_visualizer():
-            import omni.kit.app
-            import omni.timeline
-
-            omni.timeline.get_timeline_interface().stop()
-            self.settings.set_bool("/app/player/playSimulations", False)
-            omni.kit.app.get_app().update()
+        self._visualizer_interface.on_stop()
         self._is_playing = False
 
     def render(self, mode: RenderMode | None = None):
@@ -824,46 +808,7 @@ class SimulationContext:
         Args:
             mode: The rendering mode. Defaults to None, in which case the current rendering mode is used.
         """
-
-        # pass if omniverse is not running
-        if not self._visualizer_interface.has_omniverse_visualizer():
-            return
-
-        import omni.kit.app
-
-        # check if we need to raise an exception that was raised in a callback
-        if builtins.ISAACLAB_CALLBACK_EXCEPTION is not None:
-            exception_to_raise = builtins.ISAACLAB_CALLBACK_EXCEPTION
-            builtins.ISAACLAB_CALLBACK_EXCEPTION = None
-            raise exception_to_raise
-        # check if we need to change the render mode
-        if mode is not None:
-            self.set_render_mode(mode)
-        # render based on the render mode
-        if self.render_mode == self.RenderMode.NO_GUI_OR_RENDERING:
-            # we never want to render anything here (this is for complete headless mode)
-            pass
-        elif self.render_mode == self.RenderMode.NO_RENDERING:
-            # throttle the rendering frequency to keep the UI responsive
-            self._render_throttle_counter += 1
-            if self._render_throttle_counter % self._render_throttle_period == 0:
-                self._render_throttle_counter = 0
-                # here we don't render viewport so don't need to flush fabric data
-                # note: we don't call super().render() anymore because they do flush the fabric data
-                self.settings.set_bool("/app/player/playSimulations", False)
-                omni.kit.app.get_app().update()
-        else:
-            # manually flush the fabric data to update Hydra textures
-            self.forward()
-            # render the simulation
-            # note: we don't call super().render() anymore because they do above operation inside
-            #  and we don't want to do it twice. We may remove it once we drop support for Isaac Sim 2022.2.
-            self.settings.set_bool("/app/player/playSimulations", False)
-            omni.kit.app.get_app().update()
-
-        # app.update() may be changing the cuda device, so we force it back to our desired device here
-        if "cuda" in self.device:
-            torch.cuda.set_device(self.device)
+        self._visualizer_interface.render(mode)
 
     def get_physics_dt(self) -> float:
         """Returns the physics time step.
@@ -889,31 +834,10 @@ class SimulationContext:
             >>> simulation_context.get_rendering_dt()
             0.016666666666666666
         """
-
-        if not self._visualizer_interface.has_omniverse_visualizer():
-            return self.cfg.dt
-
-        if self.stage is None:
-            raise Exception("There is no stage currently opened")
-
-        # Helper function to get dt from frequency
-        def _get_dt_from_frequency():
-            frequency = self.settings.get("/app/runLoops/main/rateLimitFrequency")
-            return 1.0 / frequency if frequency else 0
-
-        if self.settings.get("/app/runLoops/main/rateLimitEnabled"):
-            return _get_dt_from_frequency()
-
-        try:
-            import omni.kit.loop._loop as omni_loop
-
-            _loop_runner = omni_loop.acquire_loop_interface()
-            if _loop_runner.get_manual_mode():
-                return _loop_runner.get_manual_step_size()
-            else:
-                return _get_dt_from_frequency()
-        except Exception:
-            return _get_dt_from_frequency()
+        ov_dt = self._visualizer_interface.get_rendering_dt()
+        if ov_dt is not None:
+            return ov_dt
+        return self.cfg.dt
 
     """
     Initialization/Destruction - Override.
