@@ -76,3 +76,11 @@ class Visualizer(ABC):
     def supports_live_plots(self) -> bool:
         """Check if visualizer supports LivePlots."""
         return False
+
+    def get_rendering_dt(self) -> float | None:
+        """Get rendering time step. Returns None to use interface default."""
+        return None
+
+    def set_camera_view(self, eye: tuple, target: tuple) -> None:
+        """Set camera view position. No-op by default."""
+        pass

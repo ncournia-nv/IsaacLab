@@ -195,6 +195,24 @@ class OVVisualizer(Visualizer):
         """
         return True
 
+    def get_rendering_dt(self) -> float | None:
+        """Get rendering dt based on OV rate limiting settings."""
+        settings = self._simulation_context.settings
+
+        def _from_frequency():
+            freq = settings.get("/app/runLoops/main/rateLimitFrequency")
+            return 1.0 / freq if freq else None
+
+        if settings.get("/app/runLoops/main/rateLimitEnabled"):
+            return _from_frequency()
+
+        try:
+            import omni.kit.loop._loop as omni_loop
+            runner = omni_loop.acquire_loop_interface()
+            return runner.get_manual_step_size() if runner.get_manual_mode() else _from_frequency()
+        except Exception:
+            return _from_frequency()
+
     def set_camera_view(
         self, eye: tuple[float, float, float] | list[float], target: tuple[float, float, float] | list[float]
     ) -> None:

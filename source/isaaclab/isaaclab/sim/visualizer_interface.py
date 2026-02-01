@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import enum
 import logging
-import os
 from typing import TYPE_CHECKING
 
 from isaaclab.visualizers import NewtonVisualizerCfg, OVVisualizerCfg, RerunVisualizerCfg, Visualizer
@@ -268,30 +267,14 @@ class VisualizerInterface:
         return True
 
     def get_rendering_dt(self) -> float:
-        """Get rendering dt for OV mode."""
-        if "omniverse" not in self._visualizers_str:
-            return self.dt
-
-        def _from_frequency():
-            freq = self.settings.get("/app/runLoops/main/rateLimitFrequency")
-            return 1.0 / freq if freq else 0
-
-        if self.settings.get("/app/runLoops/main/rateLimitEnabled"):
-            return _from_frequency()
-
-        try:
-            import omni.kit.loop._loop as omni_loop
-            runner = omni_loop.acquire_loop_interface()
-            return runner.get_manual_step_size() if runner.get_manual_mode() else _from_frequency()
-        except Exception:
-            return _from_frequency()
-
-    def set_camera_view(self, eye: tuple, target: tuple, camera_prim_path: str = "/OmniverseKit_Persp") -> None:
-        """Set viewport camera position (OV visualizer only)."""
+        """Get rendering dt from visualizers, or fall back to physics dt."""
         for viz in self._visualizers:
-            is_ov = getattr(getattr(viz, "cfg", None), "visualizer_type", None) == "omniverse"
-            if is_ov and hasattr(viz, "set_camera_view"):
-                viz.set_camera_view(eye, target)
-                return
+            dt = viz.get_rendering_dt()
+            if dt is not None:
+                return dt
+        return self.dt
 
-        logger.debug("No Omniverse visualizer found - set_camera_view has no effect.")
+    def set_camera_view(self, eye: tuple, target: tuple) -> None:
+        """Set camera view on all visualizers that support it."""
+        for viz in self._visualizers:
+            viz.set_camera_view(eye, target)
