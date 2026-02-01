@@ -17,14 +17,46 @@ import isaaclab.sim.utils.stage as stage_utils
 
 from isaaclab.app.settings_manager import SettingsManager
 from isaaclab.sim.utils import create_new_stage_in_memory, raise_callback_exception_if_any
+from .interface import Interface
 from .physics_interface import PhysicsInterface
-from .render_interface import RenderInterface
+from .renderer_interface import RendererInterface
 from .simulation_cfg import SimulationCfg
 from .visualizer_interface import VisualizerInterface
 from .spawners import DomeLightCfg, GroundPlaneCfg
 
 # import logger
 logger = logging.getLogger(__name__)
+
+
+class SettingsHelper:
+    """Helper for typed Carbonite settings access."""
+
+    def __init__(self, settings: SettingsManager):
+        self._settings = settings
+
+    def set(self, name: str, value: Any) -> None:
+        """Set a Carbonite setting with automatic type routing.
+
+        Args:
+            name: The setting name (e.g., "/physics/cudaDevice").
+            value: The value to set (bool, int, float, str, list, or tuple).
+        """
+        if isinstance(value, bool):
+            self._settings.set_bool(name, value)
+        elif isinstance(value, int):
+            self._settings.set_int(name, value)
+        elif isinstance(value, float):
+            self._settings.set_float(name, value)
+        elif isinstance(value, str):
+            self._settings.set_string(name, value)
+        elif isinstance(value, (list, tuple)):
+            self._settings.set(name, value)
+        else:
+            raise ValueError(f"Unsupported value type for setting '{name}': {type(value)}")
+
+    def get(self, name: str) -> Any:
+        """Get a Carbonite setting value."""
+        return self._settings.get(name)
 
 
 class SimulationContext:
@@ -37,9 +69,6 @@ class SimulationContext:
     * Rendering and visualization
 
     The singleton instance can be accessed using the ``instance()`` class method.
-
-    .. attention::
-        Only the PyTorch backend is supported. All data structures are ``torch.Tensor`` objects.
     """
 
     # Singleton instance
@@ -63,62 +92,56 @@ class SimulationContext:
         Args:
             cfg: Simulation configuration. Defaults to None (uses default config).
         """
-        # Skip initialization if already initialized (singleton pattern)
-        if self._initialized:
-            return
+        # Skip initialization if already initialized
+        if not self._initialized:
+            # store input
+            self.cfg = SimulationCfg() if cfg is None else cfg
+            self.device = self.cfg.device
 
-        # store input
-        self.cfg = SimulationCfg() if cfg is None else cfg
-        self.device = self.cfg.device
+            # get existing stage or create new one in memory
+            stage_cache = UsdUtils.StageCache.Get()
+            all_stages = stage_cache.GetAllStages() if stage_cache.Size() > 0 else []
+            self.stage = all_stages[0] if all_stages else create_new_stage_in_memory()
 
-        # get existing stage or create new one in memory
-        stage_cache = UsdUtils.StageCache.Get()
-        all_stages = stage_cache.GetAllStages() if stage_cache.Size() > 0 else []
-        self.stage = all_stages[0] if all_stages else create_new_stage_in_memory()
+            # acquire settings interface
+            self.settings = SettingsManager.instance()
+            self._settings_helper = SettingsHelper(self.settings)
 
-        # acquire settings interface
-        self.settings = SettingsManager.instance()
+            # Initialize interfaces (order matters: visualizer first for config, then physics)
+            self._visualizer_interface = VisualizerInterface(self)
+            self._physics_interface = PhysicsInterface(self)
+            self._renderer_interface = RendererInterface(self)
 
-        # Initialize Interfaces
-        self._visualizer_interface: VisualizerInterface = VisualizerInterface(self)
-        self._render_interface: RenderInterface = RenderInterface(self)  # only initialize, sensor owns its lifecycle
-        self._physics_interface: PhysicsInterface = PhysicsInterface(self)
+            # List of interfaces for common operations
+            self._interfaces: list[Interface] = [
+                self._physics_interface,
+                self._visualizer_interface,
+                self._renderer_interface,
+            ]
 
-        # define a global variable to store the exceptions raised in the callback stack
-        builtins.ISAACLAB_CALLBACK_EXCEPTION = None
+            # define a global variable to store the exceptions raised in the callback stack
+            builtins.ISAACLAB_CALLBACK_EXCEPTION = None
 
-        self._is_playing = False
-        self._initialized = True
+            self._is_playing = False
+            self._initialized = True
 
-    def set_setting(self, name: str, value: Any):
-        """Set a Carbonite setting value.
+    def _call_interfaces(self, method: str, **kwargs) -> None:
+        """Call a method on all interfaces."""
+        for interface in self._interfaces:
+            getattr(interface, method)(**kwargs)
+        raise_callback_exception_if_any()
 
-        Args:
-            name: The setting name (e.g., "/physics/cudaDevice").
-            value: The value to set (bool, int, float, str, list, or tuple).
-        """
-        # Route through typed setters for correctness and consistency for common scalar types.
-        if isinstance(value, bool):
-            self.settings.set_bool(name, value)
-        elif isinstance(value, int):
-            self.settings.set_int(name, value)
-        elif isinstance(value, float):
-            self.settings.set_float(name, value)
-        elif isinstance(value, str):
-            self.settings.set_string(name, value)
-        elif isinstance(value, (list, tuple)):
-            self.settings.set(name, value)
-        else:
-            raise ValueError(f"Unsupported value type for setting '{name}': {type(value)}")
+    def set_setting(self, name: str, value: Any) -> None:
+        """Set a Carbonite setting value."""
+        self._settings_helper.set(name, value)
 
     def get_setting(self, name: str) -> Any:
         """Get a Carbonite setting value."""
-        return self.settings.get(name)
+        return self._settings_helper.get(name)
 
     def forward(self) -> None:
         """Update kinematics and sync scene data without stepping physics."""
-        self._physics_interface.forward()
-        self._visualizer_interface.forward()
+        self._call_interfaces("forward")
 
     def reset(self, soft: bool = False):
         """Reset the simulation.
@@ -126,9 +149,7 @@ class SimulationContext:
         Args:
             soft: If True, skip full reinitialization.
         """
-        raise_callback_exception_if_any()
-        self._physics_interface.reset(soft)
-        self._visualizer_interface.reset(soft)
+        self._call_interfaces("reset", soft=soft)
         self._is_playing = True
 
     def step(self, render: bool = True):
@@ -137,9 +158,7 @@ class SimulationContext:
         Args:
             render: Whether to render the scene after stepping. Defaults to True.
         """
-        raise_callback_exception_if_any()
-        self._physics_interface.step()
-        self._visualizer_interface.step(render=render)
+        self._call_interfaces("step", render=render)
 
     def is_playing(self) -> bool:
         """Returns True if simulation is playing."""
@@ -147,12 +166,12 @@ class SimulationContext:
 
     def play(self):
         """Start the simulation."""
-        self._visualizer_interface.on_play()
+        self._call_interfaces("play")
         self._is_playing = True
 
     def stop(self):
         """Stop the simulation."""
-        self._visualizer_interface.on_stop()
+        self._call_interfaces("stop")
         self._is_playing = False
 
     def render(self, mode: int | None = None):
@@ -177,14 +196,10 @@ class SimulationContext:
 
     def clear_instance(self):
         """Clean up resources and clear the singleton instance."""
-        self._visualizer_interface.close()
-        self._physics_interface.close()
+        self._call_interfaces("close")
         # clear stage references
-        if hasattr(self, "stage"):
-            self.stage = None
-        # reset initialization flag
+        self.stage = None
         self._initialized = False
-        # clear the singleton instance
         type(self)._instance = None
 
 
@@ -271,4 +286,3 @@ def build_simulation_context(
             sim.stop()
         sim.clear_all_callbacks()
         sim.clear_instance()
-        raise_callback_exception_if_any()

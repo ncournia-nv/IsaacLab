@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Render interface for SimulationContext."""
+"""RTX renderer backend for RendererInterface."""
 
 from __future__ import annotations
 
@@ -14,28 +14,31 @@ from typing import TYPE_CHECKING
 import flatdict
 import toml
 
+from .renderer import Renderer
+
 if TYPE_CHECKING:
-    from .simulation_context import SimulationContext
-    from .visualizer_interface import VisualizerInterface
+    from isaaclab.sim.simulation_context import SimulationContext
 
 logger = logging.getLogger(__name__)
 
 
-class RenderInterface:
-    """Manages rendering configuration and lifecycle for SimulationContext."""
+class RTXRenderer(Renderer):
+    """RTX-based renderer using Omniverse RTX settings."""
 
-    def __init__(self, sim_context: "SimulationContext", visualizer_interface: "VisualizerInterface | None" = None):
-        self._sim = sim_context
-        self._visualizer_interface = visualizer_interface
-        # Fabric interface for flushing data to Hydra
+    def __init__(self, sim_context: "SimulationContext"):
+        """Initialize RTX renderer and apply settings.
+
+        Args:
+            sim_context: Parent simulation context.
+        """
+        super().__init__(sim_context)
+        self._sim.settings.set("/isaaclab/fabric_enabled", False)
         self._fabric_iface = None
         self._update_fabric = None
-        self.apply_render_settings_from_cfg()
-        # Load fabric interface if enabled
-        # self.load_fabric_interface()
+        self._apply_render_settings()
 
-    def apply_render_settings_from_cfg(self):
-        """Sets rtx settings specified in the RenderCfg."""
+    def _apply_render_settings(self) -> None:
+        """Apply RTX settings from RenderCfg."""
         rendering_setting_name_mapping = {
             "enable_translucency": "/rtx/translucency/enabled",
             "enable_reflections": "/rtx/reflections/enabled",
@@ -105,29 +108,32 @@ class RenderInterface:
         if render_mode is not None and render_mode.lower() == "raytracedlighting":
             self._sim.settings.set("/rtx/rendermode", "RaytracedLighting")
 
-    def has_rtx_sensors(self) -> bool:
-        """Returns whether the simulation has any RTX-rendering related sensors."""
-        return self._sim.settings.get("/isaaclab/render/rtx_sensors")
+    def reset(self, soft: bool = False) -> None:
+        """Reset RTX renderer (no-op)."""
+        pass
 
-    def is_fabric_enabled(self) -> bool:
-        """Returns whether the fabric interface is enabled."""
-        return self._fabric_iface is not None
+    def forward(self) -> None:
+        """Update RTX renderer (no-op)."""
+        pass
 
-    def load_fabric_interface(self):
+    def step(self, render: bool = True) -> None:
+        """Step RTX renderer (no-op)."""
+        pass
+
+    def close(self) -> None:
+        """Clean up RTX renderer resources."""
+        self._fabric_iface = None
+        self._update_fabric = None
+
+    def load_fabric_interface(self) -> None:
         """Loads the fabric interface if enabled."""
         if self._sim.cfg.use_fabric:
             from omni.physxfabric import get_physx_fabric_interface
-            # acquire fabric interface
+
             self._fabric_iface = get_physx_fabric_interface()
             if hasattr(self._fabric_iface, "force_update"):
-                # The update method in the fabric interface only performs an update if a physics step has occurred.
-                # However, for rendering, we need to force an update since any element of the scene might have been
-                # modified in a reset (which occurs after the physics step) and we want the renderer to be aware of
-                # these changes.
                 self._update_fabric = self._fabric_iface.force_update
             else:
-                # Needed for backward compatibility with older Isaac Sim versions
                 self._update_fabric = self._fabric_iface.update
 
-    def get_rendering_dt(self) -> float:
-        return self._sim.get_rendering_dt()
+            self._sim.settings.set("/isaaclab/fabric_enabled", True)

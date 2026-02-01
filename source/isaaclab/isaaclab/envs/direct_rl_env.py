@@ -306,11 +306,11 @@ class DirectRLEnv(gym.Env):
         self.scene.write_data_to_sim()
 
         # if sensors are added to the scene, make sure we render to reflect changes in reset
-        if self.sim._render_interface.has_rtx_sensors() and self.cfg.rerender_on_reset:
+        if self.sim.settings.get("/isaaclab/render/rtx_sensors") and self.cfg.rerender_on_reset:
             self.sim.render()
 
         # TODO: Fix this
-        # if self.cfg.wait_for_textures and self.sim._render_interface.has_rtx_sensors():
+        # if self.cfg.wait_for_textures and self.sim.settings.get("/isaaclab/render/rtx_sensors"):
         #     while SimulationManager.assets_loading():
         #         self.sim.render()
 
@@ -352,7 +352,7 @@ class DirectRLEnv(gym.Env):
 
         # check if we need to do rendering within the physics loop
         # note: checked here once to avoid multiple checks within the loop
-        is_rendering = self.sim._visualizer_interface.has_gui() or self.sim._render_interface.has_rtx_sensors()
+        is_rendering = self.sim._visualizer_interface.has_gui() or self.sim.settings.get("/isaaclab/render/rtx_sensors")
 
         # perform physics stepping
         for _ in range(self.cfg.decimation):
@@ -390,7 +390,7 @@ class DirectRLEnv(gym.Env):
                 # update articulation kinematics
                 self.scene.write_data_to_sim()
                 # if sensors are added to the scene, make sure we render to reflect changes in reset
-                if self.sim._render_interface.has_rtx_sensors() and self.cfg.rerender_on_reset:
+                if self.sim.settings.get("/isaaclab/render/rtx_sensors") and self.cfg.rerender_on_reset:
                     self.sim.render()
 
             # post-step: step interval event
@@ -453,7 +453,7 @@ class DirectRLEnv(gym.Env):
         """
         # run a rendering step of the simulator
         # if we have rtx sensors, we do not need to render again sim
-        if not self.sim._render_interface.has_rtx_sensors() and not recompute:
+        if not self.sim.settings.get("/isaaclab/render/rtx_sensors") and not recompute:
             self.sim.render()
         # decide the rendering mode
         if self.render_mode == "human" or self.render_mode is None:

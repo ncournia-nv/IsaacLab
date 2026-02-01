@@ -62,7 +62,7 @@ def test_initialization():
 
     # check valid settings
     assert sim.get_physics_dt() == cfg.dt
-    assert not sim._render_interface.has_rtx_sensors()
+    assert not sim._renderer_interface.has_rtx_sensors()
     # check valid paths
     assert prim_utils.is_prim_path_valid("/Physics/PhysX")
     assert prim_utils.is_prim_path_valid("/Physics/PhysX/defaultMaterial")

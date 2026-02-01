@@ -385,7 +385,7 @@ class ManagerBasedEnv:
         self.scene.write_data_to_sim()
         self.sim.forward()
         # if sensors are added to the scene, make sure we render to reflect changes in reset
-        if self.sim._render_interface.has_rtx_sensors() and self.cfg.num_rerenders_on_reset > 0:
+        if self.sim.settings.get("/isaaclab/render/rtx_sensors") and self.cfg.num_rerenders_on_reset > 0:
             for _ in range(self.cfg.num_rerenders_on_reset):
                 self.sim.render()
 
@@ -396,7 +396,7 @@ class ManagerBasedEnv:
         self.obs_buf = self.observation_manager.compute(update_history=True)
 
         # TODO: Fix this
-        # if self.cfg.wait_for_textures and self.sim._render_interface.has_rtx_sensors():
+        # if self.cfg.wait_for_textures and self.sim.settings.get("/isaaclab/render/rtx_sensors"):
         #     while SimulationManager.assets_loading():
         #         self.sim.render()
 
@@ -447,7 +447,7 @@ class ManagerBasedEnv:
         self.sim.forward()
 
         # if sensors are added to the scene, make sure we render to reflect changes in reset
-        if self.sim._render_interface.has_rtx_sensors() and self.cfg.num_rerenders_on_reset > 0:
+        if self.sim.settings.get("/isaaclab/render/rtx_sensors") and self.cfg.num_rerenders_on_reset > 0:
             for _ in range(self.cfg.num_rerenders_on_reset):
                 self.sim.render()
 
@@ -482,7 +482,7 @@ class ManagerBasedEnv:
 
         # check if we need to do rendering within the physics loop
         # note: checked here once to avoid multiple checks within the loop
-        is_rendering = self.sim._visualizer_interface.has_gui() or self.sim._render_interface.has_rtx_sensors()
+        is_rendering = self.sim._visualizer_interface.has_gui() or self.sim.settings.get("/isaaclab/render/rtx_sensors")
 
         # perform physics stepping
         for _ in range(self.cfg.decimation):

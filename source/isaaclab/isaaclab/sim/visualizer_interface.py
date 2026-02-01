@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from isaaclab.visualizers import NewtonVisualizerCfg, OVVisualizerCfg, RerunVisualizerCfg, Visualizer
 
+from .interface import Interface
 from .scene_data_provider import SceneDataProvider
 from .utils import raise_callback_exception_if_any
 
@@ -37,7 +38,7 @@ class RenderMode(enum.IntEnum):
     FULL_RENDERING = 2
 
 
-class VisualizerInterface:
+class VisualizerInterface(Interface):
     """Manages visualizer lifecycle and rendering for SimulationContext."""
 
     # Expose RenderMode as class attribute for backwards compatibility
@@ -49,7 +50,7 @@ class VisualizerInterface:
         Args:
             sim_context: Parent simulation context.
         """
-        self._sim = sim_context
+        super().__init__(sim_context)
         self.dt = self._sim.cfg.dt
 
         # Visualizer state
@@ -215,16 +216,12 @@ class VisualizerInterface:
         self._visualizers.clear()
         logger.info("All visualizers closed")
 
-    def on_play(self) -> None:
-        """Handle OV timeline on simulation start.
-        Octi: this is not called at all in newton branch for all visualizers
-        """
+    def play(self) -> None:
+        """Handle simulation start."""
         pass
 
-    def on_stop(self) -> None:
-        """Handle OV timeline on simulation stop.
-        Octi: this is not called at all in newton branch for all visualizers
-        """
+    def stop(self) -> None:
+        """Handle simulation stop."""
         pass
 
     def render(self) -> bool:

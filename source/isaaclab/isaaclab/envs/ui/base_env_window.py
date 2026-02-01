@@ -175,7 +175,7 @@ class BaseEnvWindow:
                     **record_animate_cfg
                 )
                 # disable the button if fabric is not enabled
-                self.ui_window_elements["record_animation"].enabled = not self.env.sim._render_interface.is_fabric_enabled()
+                self.ui_window_elements["record_animation"].enabled = not self.env.sim.settings.get("/isaaclab/fabric_enabled", False)
 
     def _build_viewer_frame(self):
         """Build the viewer-related control frame for the UI."""
