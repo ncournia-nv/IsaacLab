@@ -10,8 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from isaaclab.sim._impl.renderer import Renderer
-from isaaclab.sim._impl.rtx_renderer import RTXRenderer
+from isaaclab.renderer import OVRTXRenderer, OVRTXRendererCfg, RendererBase
 
 from .interface import Interface
 
@@ -22,7 +21,12 @@ logger = logging.getLogger(__name__)
 
 
 class RendererInterface(Interface):
-    """Manages rendering backends for SimulationContext."""
+    """Manages rendering backends for SimulationContext.
+
+    Renderers in this interface are for simulation-level settings (like RTX config).
+    Asset-managed renderers (like NewtonWarpRenderer for cameras) are managed by
+    their respective assets, not through this interface.
+    """
 
     def __init__(self, sim_context: "SimulationContext"):
         """Initialize renderer interface with default RTX renderer.
@@ -31,31 +35,29 @@ class RendererInterface(Interface):
             sim_context: Parent simulation context.
         """
         super().__init__(sim_context)
-        self._renderers: list[Renderer] = [RTXRenderer(sim_context)]
+        # Initialize RTX renderer for settings
+        rtx_cfg = OVRTXRendererCfg()
+        rtx_renderer = OVRTXRenderer(rtx_cfg, sim_context)
+        self._renderers: list[RendererBase] = [rtx_renderer]
 
     @property
-    def renderers(self) -> list[Renderer]:
+    def renderers(self) -> list[RendererBase]:
         """List of active renderers."""
         return self._renderers
 
     def reset(self, soft: bool = False) -> None:
-        """Reset all renderers."""
+        """Reset all renderers (no-op for settings renderers)."""
         for renderer in self._renderers:
-            renderer.reset(soft)
+            renderer.reset()
 
     def forward(self) -> None:
-        """Update all renderers."""
-        for renderer in self._renderers:
-            renderer.forward()
+        """Update all renderers (no-op for settings renderers)."""
+        pass
 
     def step(self, render: bool = True) -> None:
-        """Step all renderers.
-
-        Args:
-            render: Whether to render.
-        """
+        """Step all renderers (no-op for settings renderers)."""
         for renderer in self._renderers:
-            renderer.step(render)
+            renderer.step()
 
     def close(self) -> None:
         """Clean up all renderers."""

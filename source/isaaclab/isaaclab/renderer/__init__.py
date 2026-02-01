@@ -24,15 +24,16 @@ from typing import TYPE_CHECKING, Any
 
 # Import config classes (no circular dependency)
 from .newton_warp_renderer_cfg import NewtonWarpRendererCfg
+from .ov_rtx_renderer_cfg import OVRTXRendererCfg
 
 # Import base classes first
 from .renderer import RendererBase
 from .renderer_cfg import RendererCfg
 
+# Import renderer implementations (OVRTXRenderer has no heavy dependencies)
+from .ov_rtx_renderer import OVRTXRenderer
+
 # from .kit_app_renderer_cfg import KitAppRendererCfg
-
-
-# from .ov_rtx_renderer_cfg import OVRTXRendererCfg
 
 
 if TYPE_CHECKING:
@@ -40,7 +41,6 @@ if TYPE_CHECKING:
 
     from .newton_warp_renderer import NewtonWarpRenderer
 
-    # from .ov_rtx_renderer import OVRTXRenderer
     # from .kit_app_renderer import KitAppRenderer
 
 # Global registry for renderer types (lazy-loaded)
@@ -52,7 +52,7 @@ __all__ = [
     "NewtonWarpRendererCfg",
     "NewtonWarpRenderer",
     "OVRTXRendererCfg",
-    "KitAppRendererCfg",
+    "OVRTXRenderer",
     "get_renderer_class",
 ]
 

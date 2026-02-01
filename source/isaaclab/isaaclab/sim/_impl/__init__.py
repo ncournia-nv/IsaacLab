@@ -8,13 +8,9 @@
 from .newton_backend import NewtonBackend
 from .physics_backend import PhysicsBackend
 from .physx_backend import PhysXBackend
-from .renderer import Renderer
-from .rtx_renderer import RTXRenderer
 
 __all__ = [
     "NewtonBackend",
     "PhysicsBackend",
     "PhysXBackend",
-    "Renderer",
-    "RTXRenderer",
 ]

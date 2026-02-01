@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""RTX renderer backend for RendererInterface."""
+"""Omniverse RTX renderer for applying RTX settings."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING
 import flatdict
 import toml
 
-from .renderer import Renderer
+from .ov_rtx_renderer_cfg import OVRTXRendererCfg
+from .renderer import RendererBase
 
 if TYPE_CHECKING:
     from isaaclab.sim.simulation_context import SimulationContext
@@ -22,23 +23,49 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class RTXRenderer(Renderer):
-    """RTX-based renderer using Omniverse RTX settings."""
+class OVRTXRenderer(RendererBase):
+    """Omniverse RTX renderer for applying RTX settings.
 
-    def __init__(self, sim_context: "SimulationContext"):
-        """Initialize RTX renderer and apply settings.
+    Unlike camera renderers (NewtonWarpRenderer), this renderer doesn't produce
+    image output. It configures the RTX rendering pipeline settings from
+    SimulationCfg.render_cfg.
+
+    Lifecycle is managed by RendererInterface, but actual rendering is handled
+    by Omniverse's RTX pipeline.
+    """
+
+    def __init__(self, cfg: OVRTXRendererCfg, sim_context: "SimulationContext | None" = None):
+        """Initialize RTX renderer.
 
         Args:
-            sim_context: Parent simulation context.
+            cfg: Renderer configuration.
+            sim_context: Optional simulation context for settings access.
+                        If None, settings must be applied later via apply_settings().
         """
-        super().__init__(sim_context)
-        self._sim.settings.set("/isaaclab/fabric_enabled", False)
+        super().__init__(cfg)
+        self._sim = sim_context
         self._fabric_iface = None
         self._update_fabric = None
+
+        if sim_context is not None:
+            self._sim.settings.set("/isaaclab/fabric_enabled", False)
+            self._apply_render_settings()
+
+    def apply_settings(self, sim_context: "SimulationContext") -> None:
+        """Apply RTX settings from simulation context.
+
+        Args:
+            sim_context: Simulation context with render_cfg.
+        """
+        self._sim = sim_context
+        self._sim.settings.set("/isaaclab/fabric_enabled", False)
         self._apply_render_settings()
 
     def _apply_render_settings(self) -> None:
         """Apply RTX settings from RenderCfg."""
+        if self._sim is None:
+            return
+
         rendering_setting_name_mapping = {
             "enable_translucency": "/rtx/translucency/enabled",
             "enable_reflections": "/rtx/reflections/enabled",
@@ -108,26 +135,30 @@ class RTXRenderer(Renderer):
         if render_mode is not None and render_mode.lower() == "raytracedlighting":
             self._sim.settings.set("/rtx/rendermode", "RaytracedLighting")
 
-    def reset(self, soft: bool = False) -> None:
-        """Reset RTX renderer (no-op)."""
+    def initialize(self) -> None:
+        """Initialize renderer (no-op for RTX settings renderer)."""
         pass
 
-    def forward(self) -> None:
-        """Update RTX renderer (no-op)."""
+    def step(self) -> None:
+        """Step renderer (no-op for RTX settings renderer)."""
         pass
 
-    def step(self, render: bool = True) -> None:
-        """Step RTX renderer (no-op)."""
+    def reset(self) -> None:
+        """Reset renderer (no-op for RTX settings renderer)."""
         pass
 
     def close(self) -> None:
-        """Clean up RTX renderer resources."""
+        """Clean up renderer resources."""
         self._fabric_iface = None
         self._update_fabric = None
 
+    def _initialize_output(self) -> None:
+        """Initialize output (no-op - RTX renderer doesn't produce direct output)."""
+        pass
+
     def load_fabric_interface(self) -> None:
-        """Loads the fabric interface if enabled."""
-        if self._sim.cfg.use_fabric:
+        """Load fabric interface if enabled."""
+        if self._sim is not None and self._sim.cfg.use_fabric:
             from omni.physxfabric import get_physx_fabric_interface
 
             self._fabric_iface = get_physx_fabric_interface()
