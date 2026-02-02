@@ -267,7 +267,7 @@ def build_simulation_context(
             cfg = GroundPlaneCfg()
             cfg.func("/World/defaultGroundPlane", cfg)
 
-        if add_lighting or (auto_add_lighting and sim._visualizer_interface.has_gui()):
+        if add_lighting or (auto_add_lighting and bool(sim.settings.get("/isaaclab/render/active_viewport"))):
             # Lighting
             cfg = DomeLightCfg(
                 color=(0.1, 0.1, 0.1), enable_color_temperature=True, color_temperature=5500, intensity=10000
@@ -282,7 +282,7 @@ def build_simulation_context(
         raise
     finally:
         # Only stop programmatically in headless mode - with GUI, the app manages its own lifecycle
-        if not sim._visualizer_interface.has_gui():
+        if not sim.settings.get("/isaaclab/render/active_viewport"):
             sim.stop()
         sim.clear_all_callbacks()
         sim.clear_instance()

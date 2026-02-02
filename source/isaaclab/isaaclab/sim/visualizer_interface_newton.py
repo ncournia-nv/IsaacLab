@@ -51,14 +51,25 @@ class VisualizerInterface(Interface):
             sim_context: Parent simulation context.
         """
         super().__init__(sim_context)
-        self.dt = self._sim.cfg.dt
-
+        self.dt = self._sim.cfg.dt * self._sim.cfg.render_interval
         # Visualizer state
         visualizers = self.settings.get("/isaaclab/visualizer") or ""
         self._visualizers_str = [v.strip() for v in visualizers.split(",") if v.strip()]
         self._visualizers: list[Visualizer] = []
         self._visualizer_step_counter = 0
         self._scene_data_provider: SceneDataProvider | None = None
+        # Detect render flags
+        self._offscreen_render = bool(self.settings.get("/isaaclab/render/offscreen"))
+        self._render_viewport = bool(self.settings.get("/isaaclab/render/active_viewport"))
+        self._rtx_sensors = bool(self.settings.get("/isaaclab/render/rtx_sensors", False))
+        self._has_gui = bool(self.sim.settings.get("/isaaclab/visualizer"))
+
+        if not self._has_gui and not self._offscreen_render:
+            self.render_mode = RenderMode.NO_GUI_OR_RENDERING
+        elif not self._has_gui and self._offscreen_render:
+            self.render_mode = RenderMode.PARTIAL_RENDERING
+        else:
+            self.render_mode = RenderMode.FULL_RENDERING
 
     # -- Properties --
 
@@ -82,6 +93,9 @@ class VisualizerInterface(Interface):
     def scene_data_provider(self) -> SceneDataProvider | None:
         return self._scene_data_provider
 
+    def has_gui(self) -> bool:
+        return self._has_gui
+
     # -- Visualizer Initialization --
 
     def _create_default_visualizer_configs(self, requested: list[str]) -> list:
@@ -103,7 +117,7 @@ class VisualizerInterface(Interface):
     def initialize_visualizers(self) -> None:
         """Initialize visualizers based on --visualizer flag."""
         if not self._visualizers_str:
-            if bool(self.sim.settings.get("/isaaclab/visualizer")) or bool(self.settings.get("/isaaclab/render/offscreen")):
+            if self._has_gui or self._offscreen_render:
                 logger.info("No visualizers specified via --visualizer flag.")
             return
 
@@ -165,7 +179,7 @@ class VisualizerInterface(Interface):
             render: Whether to render after stepping.
         """
         # Keep UI responsive while paused
-        while not self._sim.is_playing():
+        while not self._sim.is_playing() and not self.is_stopped():
             self.render()
 
         self.forward()

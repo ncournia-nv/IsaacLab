@@ -189,7 +189,7 @@ class ManagerBasedEnv:
         # extend UI elements
         # we need to do this here after all the managers are initialized
         # this is because they dictate the sensors and commands right now
-        if "omniverse" in self.sim._visualizer_interface._visualizers_str and self.sim._visualizer_interface.has_gui() and self.cfg.ui_window_class_type is not None:
+        if "omniverse" in self.sim._visualizer_interface._visualizers_str and bool(self.sim.settings.get("/isaaclab/visualizer")) and self.cfg.ui_window_class_type is not None:
             # setup live visualizers
             self.setup_manager_visualizers()
             self._window = self.cfg.ui_window_class_type(self, window_name="IsaacLab")
@@ -482,7 +482,7 @@ class ManagerBasedEnv:
 
         # check if we need to do rendering within the physics loop
         # note: checked here once to avoid multiple checks within the loop
-        is_rendering = self.sim._visualizer_interface.has_gui() or self.sim.settings.get("/isaaclab/render/rtx_sensors")
+        is_rendering = bool(self.sim.settings.get("/isaaclab/visualizer")) or self.sim.settings.get("/isaaclab/render/rtx_sensors")
 
         # perform physics stepping
         for _ in range(self.cfg.decimation):
