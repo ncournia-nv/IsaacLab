@@ -175,6 +175,17 @@ def _sync_newton_transforms_kernel(
     ovrtx_transforms[i] = wp.transpose(wp.mat44d(wp.math.transform_to_matrix(transform)))
 
 
+def _parse_warp_device(device: str) -> tuple[str, int | None]:
+    """Parse a device string into (device_type, device_id)."""
+    device = device.strip()
+    if device.startswith("cuda"):
+        parts = device.split(":", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            return "cuda", int(parts[1])
+        return "cuda", 0
+    return device, None
+
+
 class OVRTXRenderer(RendererBase):
     """OVRTX Renderer implementation using the ovrtx library.
     
@@ -196,6 +207,10 @@ class OVRTXRenderer(RendererBase):
         self._usd_handles = []
         self._render_product_paths = []
         self._frame_counter = 0
+
+        # Store device configuration for warp allocations and kernels.
+        self._device = cfg.device if hasattr(cfg, "device") else "cuda:0"
+        self._device_type, self._device_id = _parse_warp_device(self._device)
         
         # Calculate tiled dimensions properly (not a square grid)
         # Use same logic as TiledCamera._tiling_grid_shape()
@@ -226,6 +241,12 @@ class OVRTXRenderer(RendererBase):
             # Create the output directory if it doesn't exist
             Path(self._image_folder).mkdir(parents=True, exist_ok=True)
             print(f"[OVRTX] Images will be saved to: {self._image_folder}")
+
+    def _map_binding(self, binding):
+        """Map a binding on the configured device."""
+        if self._device_type == "cuda":
+            return binding.map(device=self._device_type, device_id=self._device_id)
+        return binding.map(device=self._device_type)
 
     def _deactivate_cloned_envs(self, stage) -> list:
         """Deactivate all cloned environments (env_1 onwards) to exclude from export.
@@ -639,7 +660,7 @@ class OVRTXRenderer(RendererBase):
             if self._object_binding is not None:
                 print(f"  ✓ Object binding created successfully")
                 # Store Newton body indices for later lookup
-                self._object_newton_indices = wp.array(newton_indices, dtype=wp.int32, device="cuda:0")
+                self._object_newton_indices = wp.array(newton_indices, dtype=wp.int32, device=self._device)
             else:
                 print(f"  ✗ WARNING: Object binding is None!")
                 
@@ -680,7 +701,7 @@ class OVRTXRenderer(RendererBase):
         if any(dt in ["rgba", "rgb"] for dt in self._data_types):
             # RGBA buffer: (num_envs, height, width, 4) of uint8
             self._output_data_buffers["rgba"] = wp.zeros(
-                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device="cuda:0"
+                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device=self._device
             )
             # Create RGB view that references the same underlying array as RGBA, but only first 3 channels
             self._output_data_buffers["rgb"] = self._output_data_buffers["rgba"][:, :, :, :3]
@@ -688,29 +709,29 @@ class OVRTXRenderer(RendererBase):
         # Albedo buffer (4-channel RGBA format, similar to rgb/rgba)
         if "albedo" in self._data_types:
             self._output_data_buffers["albedo"] = wp.zeros(
-                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device="cuda:0"
+                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device=self._device
             )
         
         # Semantic segmentation buffer (4-channel RGBA format for colorized output)
         if "semantic_segmentation" in self._data_types:
             self._output_data_buffers["semantic_segmentation"] = wp.zeros(
-                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device="cuda:0"
+                (self._num_envs, self._height, self._width, 4), dtype=wp.uint8, device=self._device
             )
         
         # Depth buffers (note: "depth" is an alias for "distance_to_image_plane")
         if "depth" in self._data_types:
             self._output_data_buffers["depth"] = wp.zeros(
-                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
+                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device=self._device
             )
         
         if "distance_to_image_plane" in self._data_types:
             self._output_data_buffers["distance_to_image_plane"] = wp.zeros(
-                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
+                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device=self._device
             )
         
         if "distance_to_camera" in self._data_types:
             self._output_data_buffers["distance_to_camera"] = wp.zeros(
-                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device="cuda:0"
+                (self._num_envs, self._height, self._width, 1), dtype=wp.float32, device=self._device
             )
 
 ###    def _setup_scene(self, as_root_layer: bool = True):
@@ -858,19 +879,19 @@ class OVRTXRenderer(RendererBase):
         camera_orientations_wp = wp.from_torch(camera_quats_opengl.contiguous(), dtype=wp.quatf)
         
         # Create camera transforms array
-        camera_transforms = wp.zeros(num_envs, dtype=wp.mat44d, device="cuda:0")
+        camera_transforms = wp.zeros(num_envs, dtype=wp.mat44d, device=self._device)
         
         # Launch kernel to populate transforms
         wp.launch(
             kernel=_create_camera_transforms_kernel,
             dim=num_envs,
             inputs=[camera_positions_wp, camera_orientations_wp, camera_transforms],
-            device="cuda:0",
+            device=self._device,
         )
         
         # Update camera transforms in the scene using the binding
         if self._camera_binding is not None:
-            with self._camera_binding.map(device="cuda", device_id=0) as attr_mapping:
+            with self._map_binding(self._camera_binding) as attr_mapping:
                 wp_transforms_view = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
                 
                 # Debug: Print transforms before and after update (first frame only)
@@ -921,7 +942,7 @@ class OVRTXRenderer(RendererBase):
                             rgb_render_var = "LdrColor"
                         
                         if rgb_render_var and "rgba" in self._output_data_buffers:
-                            with frame.render_vars[rgb_render_var].map(device="cuda") as mapping:
+                            with frame.render_vars[rgb_render_var].map(device=self._device_type) as mapping:
                                 tiled_data = wp.from_dlpack(mapping.tensor)
                                 # print(f"[DEBUG] Tiled data shape: {tiled_data.shape} (from {rgb_render_var})")
                                 
@@ -946,7 +967,7 @@ class OVRTXRenderer(RendererBase):
                                             self._width,
                                             self._height,
                                         ],
-                                        device="cuda:0",
+                                        device=self._device,
                                     )
                                     
                                     # Save individual image
@@ -962,7 +983,7 @@ class OVRTXRenderer(RendererBase):
                                 break
                         
                         if depth_var_found:
-                            with frame.render_vars[depth_var_found].map(device="cuda") as mapping:
+                            with frame.render_vars[depth_var_found].map(device=self._device_type) as mapping:
                                 tiled_depth_data = wp.from_dlpack(mapping.tensor)
                                 # print(f"[DEBUG] Tiled depth data ({depth_var_found}) shape: {tiled_depth_data.shape}, dtype: {tiled_depth_data.dtype}")
                                 
@@ -998,7 +1019,7 @@ class OVRTXRenderer(RendererBase):
                                                     self._width,
                                                     self._height,
                                                 ],
-                                                device="cuda:0",
+                                                device=self._device,
                                             )
                                     
                                     # Save depth image to disk for the first depth type available
@@ -1010,7 +1031,7 @@ class OVRTXRenderer(RendererBase):
                         
                         # Extract albedo if available
                         if "DiffuseAlbedoSD" in frame.render_vars and "albedo" in self._output_data_buffers:
-                            with frame.render_vars["DiffuseAlbedoSD"].map(device="cuda") as mapping:
+                            with frame.render_vars["DiffuseAlbedoSD"].map(device=self._device_type) as mapping:
                                 tiled_albedo_data = wp.from_dlpack(mapping.tensor)
                                 # print(f"[DEBUG] Tiled albedo data shape: {tiled_albedo_data.shape}, dtype: {tiled_albedo_data.dtype}")
                                 
@@ -1035,7 +1056,7 @@ class OVRTXRenderer(RendererBase):
                                             self._width,
                                             self._height,
                                         ],
-                                        device="cuda:0",
+                                        device=self._device,
                                     )
                                     
                                     # Save individual albedo image
@@ -1045,7 +1066,7 @@ class OVRTXRenderer(RendererBase):
                         
                         # Extract semantic segmentation if available
                         if "SemanticSegmentationSD" in frame.render_vars and "semantic_segmentation" in self._output_data_buffers:
-                            with frame.render_vars["SemanticSegmentationSD"].map(device="cuda") as mapping:
+                            with frame.render_vars["SemanticSegmentationSD"].map(device=self._device_type) as mapping:
                                 tiled_semantic_data = wp.from_dlpack(mapping.tensor)
                                 # print(f"[DEBUG] Tiled semantic segmentation data shape: {tiled_semantic_data.shape}, dtype: {tiled_semantic_data.dtype}")
                                 
@@ -1094,7 +1115,7 @@ class OVRTXRenderer(RendererBase):
                                             self._width,
                                             self._height,
                                         ],
-                                        device="cuda:0",
+                                        device=self._device,
                                     )
                                     
                                     # Save individual semantic segmentation image
@@ -1184,7 +1205,7 @@ class OVRTXRenderer(RendererBase):
                 return
             
             # Map OVRTX transforms and update from Newton
-            with self._object_binding.map(device="cuda", device_id=0) as attr_mapping:
+            with self._map_binding(self._object_binding) as attr_mapping:
                 ovrtx_transforms = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
                 
                 # Launch kernel to sync transforms
@@ -1192,7 +1213,7 @@ class OVRTXRenderer(RendererBase):
                     kernel=_sync_newton_transforms_kernel,
                     dim=len(self._object_newton_indices),
                     inputs=[ovrtx_transforms, self._object_newton_indices, newton_state.body_q],
-                    device="cuda:0",
+                    device=self._device,
                 )
                 # Unmap will commit the changes
                 

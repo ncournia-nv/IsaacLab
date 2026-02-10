@@ -19,6 +19,9 @@ class OVRTXRendererCfg(RendererCfg):
 
     renderer_type: str = "ov_rtx"
     """Type identifier for OVRTX renderer."""
+
+    device: str = "cuda:0"
+    """Device for OVRTX render buffers and kernels (e.g., "cuda:0")."""
     
     simple_shading_mode: bool = True
     """Whether to use simple shading mode (default: True).
