@@ -175,15 +175,20 @@ def _sync_newton_transforms_kernel(
     ovrtx_transforms[i] = wp.transpose(wp.mat44d(wp.math.transform_to_matrix(transform)))
 
 
-def _parse_warp_device(device: str) -> tuple[str, int | None]:
-    """Parse a device string into (device_type, device_id)."""
+def _parse_warp_device(device: str) -> tuple[str, int]:
+    """Parse a device string into (device_type, device_id).
+    OVRTX requires an RTX/CUDA GPU; non-CUDA devices are not supported.
+    """
     device = device.strip()
     if device.startswith("cuda"):
         parts = device.split(":", 1)
         if len(parts) == 2 and parts[1].isdigit():
             return "cuda", int(parts[1])
         return "cuda", 0
-    return device, None
+    raise ValueError(
+        f"OVRTX renderer requires a CUDA (RTX) GPU; got device={device!r}. "
+        "Use e.g. device='cuda:0' or device='cuda:1'."
+    )
 
 
 class OVRTXRenderer(RendererBase):
