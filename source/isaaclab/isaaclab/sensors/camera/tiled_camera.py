@@ -177,7 +177,7 @@ class TiledCamera(Camera):
                 width=self.cfg.width, height=self.cfg.height, num_cameras=self._view.count, num_envs=self._num_envs,
                 data_types=self.cfg.data_types
                 #, simple_shading_mode=False
-                , image_folder="/tmp/ovrtx"
+                #, image_folder="/tmp/ovrtx"
                 , use_ovrtx_cloning=False  # Default: use OVRTX internal cloning for faster initialization
             )
             # Lazy-load the renderer class
