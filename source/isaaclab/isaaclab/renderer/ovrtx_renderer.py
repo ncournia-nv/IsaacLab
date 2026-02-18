@@ -17,19 +17,6 @@ from PIL import Image
 
 # Set environment variables for OVRTX
 os.environ["OVRTX_SKIP_USD_CHECK"] = "1"
-# Set LD_PRELOAD if needed (libcarb.so)
-libcarb_path = Path.home() / "dev/kit.0/kit/_build/linux-x86_64/release/libcarb.so"
-if libcarb_path.exists() and "LD_PRELOAD" not in os.environ:
-    os.environ["LD_PRELOAD"] = str(libcarb_path)
-
-# Add ovrtx Python bindings to path
-ovrtx_bindings_path = Path("/home/ncournia/dev/kit.0/rendering/ovrtx/public/bindings/python")
-if str(ovrtx_bindings_path) not in sys.path:
-    sys.path.insert(0, str(ovrtx_bindings_path))
-
-# Set library path hint before importing ovrtx
-from ovrtx._src import bindings
-bindings.OVRTX_LIBRARY_PATH_HINT = "/home/ncournia/dev/kit.0/rendering/_build/linux-x86_64/release"
 
 from ovrtx import Renderer, RendererConfig
 
@@ -385,20 +372,17 @@ class OVRTXRenderer(RendererBase):
         
         print("Creating OVRTX renderer...")
         
-        # Build startup options based on simple shading mode
-        startup_options = {
-            "crashreporter/dumpDir": "/tmp",
-            # WAR to avoid startup crash due to unsafe FoundationUtils getStringBuffer on log/file which ovrtx doesn't set
-            "log/file": "/tmp/ovrtx_renderer.log",
-        }
-        
         # Add simple shading mode configuration if enabled
         if self._simple_shading_mode:
             print(f"[OVRTX] Simple shading mode ENABLED")
         else:
             print(f"[OVRTX] Simple shading mode DISABLED (using full RTX path tracing)")
         
-        OVRTX_CONFIG = RendererConfig(startup_options=startup_options)
+        # Create renderer config with proper parameters
+        OVRTX_CONFIG = RendererConfig(
+            log_file_path="/tmp/ovrtx_renderer.log",
+            log_level="warning",
+        )
         self._renderer = Renderer(OVRTX_CONFIG)
         assert self._renderer, "Renderer should be valid after creation"
         print("OVRTX renderer created successfully!")
@@ -446,11 +430,11 @@ class OVRTXRenderer(RendererBase):
             # print(f"\n[DEBUG] OVRTX Camera Binding Setup:")
             # print(f"  Total cameras: {self._num_envs}")
             # print(f"  Camera paths: {camera_paths}")
-            # print(f"  Binding to attribute: omni:fabric:worldMatrix")
+            # print(f"  Binding to attribute: omni:xform")
             
             self._camera_binding = self._renderer.bind_attribute(
                 prim_paths=camera_paths,
-                attribute_name="omni:fabric:worldMatrix",
+                attribute_name="omni:xform",
                 semantic="transform_4x4",
                 prim_mode="must_exist",
             )
@@ -631,7 +615,7 @@ class OVRTXRenderer(RendererBase):
             # Create OVRTX binding for all objects at once
             self._object_binding = self._renderer.bind_attribute(
                 prim_paths=object_paths,
-                attribute_name="omni:fabric:worldMatrix",
+                attribute_name="omni:xform",
                 semantic="transform_4x4",
                 prim_mode="must_exist",
             )
