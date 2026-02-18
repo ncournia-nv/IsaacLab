@@ -321,10 +321,10 @@ class OVRTXRenderer(RendererBase):
             else:
                 print(f"  ⚠ Warning: Failed to bind primvars:omni:scenePartition on environments")
             
-            # Write omni:scenePartitions to camera prims
+            # Write omni:scenePartition to camera prims
             cam_partition_binding = self._renderer.bind_attribute(
                 prim_paths=camera_prim_paths,
-                attribute_name="omni:scenePartitions",
+                attribute_name="omni:scenePartition",
                 semantic="token_string",
                 prim_mode="must_exist",
             )
@@ -333,9 +333,9 @@ class OVRTXRenderer(RendererBase):
                 # Reuse the same partition tokens for cameras
                 cam_partition_array = wp.array(partition_tokens, dtype=str, device="cpu")
                 self._renderer.write_attribute(cam_partition_binding, cam_partition_array, sync=True)
-                print(f"  ✓ Written omni:scenePartitions to {self._num_envs} cameras")
+                print(f"  ✓ Written omni:scenePartition to {self._num_envs} cameras")
             else:
-                print(f"  ⚠ Warning: Failed to bind omni:scenePartitions on cameras")
+                print(f"  ⚠ Warning: Failed to bind omni:scenePartition on cameras")
                 
         except Exception as e:
             print(f"  ⚠ Warning: Failed to write scene partitions: {e}")

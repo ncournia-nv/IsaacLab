@@ -187,7 +187,7 @@ class TiledCamera(Camera):
             self._renderer = renderer_cls(renderer_cfg)
 
             # Add primvars:omni:scenePartition attribute to each environment prim
-            # and all objects within it, plus omni:scenePartitions to camera prims
+            # and all objects within it, plus omni:scenePartition to camera prims
             print(f"[TILED_CAMERA] Setting up scene partitions for {self._num_envs} environments...")
             from pxr import Sdf, Usd
             
@@ -211,20 +211,35 @@ class TiledCamera(Camera):
                             # Set partition attribute on each object
                             obj_attr = prim.CreateAttribute("primvars:omni:scenePartition", Sdf.ValueTypeNames.Token)
                             obj_attr.Set(partition_name)
+                            
+                            # Set resetXformStack on prims that might have transforms updated
+                            # This allows omni:xform to be written as world transforms
+                            # We set it on all objects to be safe (robots, manipulated objects, etc.)
+                            # Skip Render-related prims
+                            type_name = prim.GetTypeName()
+                            if not type_name.startswith("Render"):
+                                reset_xform_attr = prim.CreateAttribute("omni:resetXformStack", Sdf.ValueTypeNames.Bool)
+                                reset_xform_attr.Set(True)
+                            
                             env_objects.append(prim.GetPath().pathString)
                     
                     total_objects += len(env_objects)
                     print(f"   ✓ Set primvars:omni:scenePartition = '{partition_name}' on {env_path} + {len(env_objects)} objects")
                     
-                    # Find camera prim for this environment and add omni:scenePartitions relationship
+                    # Find camera prim for this environment and add omni:scenePartition relationship
                     # Camera paths follow pattern like /World/envs/env_0/Camera (or similar based on cfg.prim_path)
                     camera_path = f"{env_path}/{self.cfg.prim_path.split('/')[-1]}"
                     camera_prim = self.stage.GetPrimAtPath(camera_path)
                     if camera_prim.IsValid():
                         # Create token attribute on camera pointing to parent environment
-                        camera_attr = camera_prim.CreateAttribute("omni:scenePartitions", Sdf.ValueTypeNames.Token)
+                        camera_attr = camera_prim.CreateAttribute("omni:scenePartition", Sdf.ValueTypeNames.Token)
                         camera_attr.Set(partition_name)
-                        print(f"   ✓ Set omni:scenePartitions = '{partition_name}' on {camera_path}")
+                        
+                        # Set resetXformStack to allow writing world transforms via omni:xform
+                        reset_xform_attr = camera_prim.CreateAttribute("omni:resetXformStack", Sdf.ValueTypeNames.Bool)
+                        reset_xform_attr.Set(True)
+                        
+                        print(f"   ✓ Set omni:scenePartition = '{partition_name}' on {camera_path}")
                     else:
                         print(f"   ⚠ Warning: Camera prim {camera_path} not found")
                 else:

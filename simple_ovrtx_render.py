@@ -19,18 +19,18 @@ from PIL import Image
 os.environ["OVRTX_SKIP_USD_CHECK"] = "1"
 
 # Set LD_PRELOAD if needed (libcarb.so)
-libcarb_path = Path.home() / "dev/kit.0/kit/_build/linux-x86_64/release/libcarb.so"
+libcarb_path = Path.home() / "dev/kit.1/kit/_build/linux-x86_64/release/libcarb.so"
 if libcarb_path.exists() and "LD_PRELOAD" not in os.environ:
     os.environ["LD_PRELOAD"] = str(libcarb_path)
 
 # Add ovrtx Python bindings to path
-ovrtx_bindings_path = Path("/home/ncournia/dev/kit.0/rendering/ovrtx/public/bindings/python")
+ovrtx_bindings_path = Path("/home/ncournia/dev/kit.1/rendering/ovrtx/public/bindings/python")
 if str(ovrtx_bindings_path) not in sys.path:
     sys.path.insert(0, str(ovrtx_bindings_path))
 
 # Set library path hint before importing ovrtx
 import ovrtx._src.bindings as bindings
-bindings.OVRTX_LIBRARY_PATH_HINT = "/home/ncournia/dev/kit.0/rendering/_build/linux-x86_64/release"
+bindings.OVRTX_LIBRARY_PATH_HINT = "/home/ncournia/dev/kit.1/rendering/_build/linux-x86_64/release"
 
 from ovrtx import Renderer, RendererConfig
 
@@ -71,12 +71,7 @@ def main():
     
     # Create renderer with configuration
     print("\nCreating OVRTX renderer...")
-    renderer_config = RendererConfig(
-        startup_options={
-            "crashreporter/dumpDir": "/tmp",
-            "log/file": "/tmp/ovrtx_renderer.log",
-        }
-    )
+    renderer_config = RendererConfig()
     renderer = Renderer(renderer_config)
     print("✓ OVRTX renderer created")
     
