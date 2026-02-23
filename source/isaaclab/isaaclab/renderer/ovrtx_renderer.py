@@ -24,7 +24,7 @@ from isaaclab.utils.math import convert_camera_frame_orientation_convention
 
 from .ovrtx_renderer_cfg import OVRTXRendererCfg
 from .renderer import RendererBase
-
+from ovrtx import Semantic, PrimMode, Device
 
 @wp.kernel
 def _create_camera_transforms_kernel(
@@ -308,8 +308,8 @@ class OVRTXRenderer(RendererBase):
             env_partition_binding = self._renderer.bind_attribute(
                 prim_paths=env_prim_paths,
                 attribute_name="primvars:omni:scenePartition",
-                semantic="token_string",
-                prim_mode="must_exist",
+                semantic=Semantic.TOKEN_STRING,
+                prim_mode=PrimMode.MUST_EXIST,
             )
             
             if env_partition_binding is not None:
@@ -325,8 +325,8 @@ class OVRTXRenderer(RendererBase):
             cam_partition_binding = self._renderer.bind_attribute(
                 prim_paths=camera_prim_paths,
                 attribute_name="omni:scenePartition",
-                semantic="token_string",
-                prim_mode="must_exist",
+                semantic=Semantic.TOKEN_STRING,
+                prim_mode=PrimMode.MUST_EXIST,
             )
             
             if cam_partition_binding is not None:
@@ -435,8 +435,8 @@ class OVRTXRenderer(RendererBase):
             self._camera_binding = self._renderer.bind_attribute(
                 prim_paths=camera_paths,
                 attribute_name="omni:xform",
-                semantic="transform_4x4",
-                prim_mode="must_exist",
+                semantic=Semantic.XFORM_MAT4x4,
+                prim_mode=PrimMode.MUST_EXIST,
             )
             
             if self._camera_binding is not None:
@@ -616,8 +616,8 @@ class OVRTXRenderer(RendererBase):
             self._object_binding = self._renderer.bind_attribute(
                 prim_paths=object_paths,
                 attribute_name="omni:xform",
-                semantic="transform_4x4",
-                prim_mode="must_exist",
+                semantic=Semantic.XFORM_MAT4x4,
+                prim_mode=PrimMode.MUST_EXIST,
             )
             
             if self._object_binding is not None:
@@ -805,8 +805,8 @@ class OVRTXRenderer(RendererBase):
 ###            self._camera_binding = self._renderer.bind_attribute(
 ###                prim_paths=camera_paths,
 ###                attribute_name="omni:fabric:worldMatrix",
-###                semantic="transform_4x4",
-###                prim_mode="must_exist",
+###                semantic=Semantic.XFORM_MAT4x4,
+###                prim_mode=PrimMode.MUST_EXIST,
 ###            )
 ###        
 ###        self._initialized_scene = True
@@ -854,7 +854,7 @@ class OVRTXRenderer(RendererBase):
         
         # Update camera transforms in the scene using the binding
         if self._camera_binding is not None:
-            with self._camera_binding.map(device="cuda", device_id=0) as attr_mapping:
+            with self._camera_binding.map(device=Device.CUDA, device_id=0) as attr_mapping:
                 wp_transforms_view = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
                 
                 # Debug: Print transforms before and after update (first frame only)
@@ -905,7 +905,7 @@ class OVRTXRenderer(RendererBase):
                             rgb_render_var = "LdrColor"
                         
                         if rgb_render_var and "rgba" in self._output_data_buffers:
-                            with frame.render_vars[rgb_render_var].map(device="cuda") as mapping:
+                            with frame.render_vars[rgb_render_var].map(device=Device.CUDA) as mapping:
                                 tiled_data = wp.from_dlpack(mapping.tensor)
                                 # print(f"[DEBUG] Tiled data shape: {tiled_data.shape} (from {rgb_render_var})")
                                 
@@ -946,7 +946,7 @@ class OVRTXRenderer(RendererBase):
                                 break
                         
                         if depth_var_found:
-                            with frame.render_vars[depth_var_found].map(device="cuda") as mapping:
+                            with frame.render_vars[depth_var_found].map(device=Device.CUDA) as mapping:
                                 tiled_depth_data = wp.from_dlpack(mapping.tensor)
                                 # print(f"[DEBUG] Tiled depth data ({depth_var_found}) shape: {tiled_depth_data.shape}, dtype: {tiled_depth_data.dtype}")
                                 
@@ -994,7 +994,7 @@ class OVRTXRenderer(RendererBase):
                         
                         # Extract albedo if available
                         if "DiffuseAlbedoSD" in frame.render_vars and "albedo" in self._output_data_buffers:
-                            with frame.render_vars["DiffuseAlbedoSD"].map(device="cuda") as mapping:
+                            with frame.render_vars["DiffuseAlbedoSD"].map(device=Device.CUDA) as mapping:
                                 tiled_albedo_data = wp.from_dlpack(mapping.tensor)
                                 # print(f"[DEBUG] Tiled albedo data shape: {tiled_albedo_data.shape}, dtype: {tiled_albedo_data.dtype}")
                                 
@@ -1029,7 +1029,7 @@ class OVRTXRenderer(RendererBase):
                         
                         # Extract semantic segmentation if available
                         if "SemanticSegmentationSD" in frame.render_vars and "semantic_segmentation" in self._output_data_buffers:
-                            with frame.render_vars["SemanticSegmentationSD"].map(device="cuda") as mapping:
+                            with frame.render_vars["SemanticSegmentationSD"].map(device=Device.CUDA) as mapping:
                                 tiled_semantic_data = wp.from_dlpack(mapping.tensor)
                                 # print(f"[DEBUG] Tiled semantic segmentation data shape: {tiled_semantic_data.shape}, dtype: {tiled_semantic_data.dtype}")
                                 
@@ -1168,7 +1168,7 @@ class OVRTXRenderer(RendererBase):
                 return
             
             # Map OVRTX transforms and update from Newton
-            with self._object_binding.map(device="cuda", device_id=0) as attr_mapping:
+            with self._object_binding.map(device=Device.CUDA, device_id=0) as attr_mapping:
                 ovrtx_transforms = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
                 
                 # Launch kernel to sync transforms
