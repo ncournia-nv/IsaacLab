@@ -6,13 +6,10 @@
 """Newton OpenGL Visualizer implementation."""
 
 import math
-import numpy as np
 import torch
-from pathlib import Path
 
 import warp as wp
 from newton.sensors import SensorTiledCamera
-from PIL import Image
 
 from isaaclab.sim._impl.newton_manager import NewtonManager
 from isaaclab.utils.math import convert_camera_frame_orientation_convention
@@ -328,113 +325,6 @@ class NewtonWarpRenderer(RendererBase):
             (self._num_envs, self._height, self._width, 1)
         )
         
-        # Save rendered images to disk
-        for env_idx in range(self._num_envs):
-            self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx)
-        
-        # Save tiled image (all environments in a grid)
-        self._save_tiled_image_to_disk()
-
-    def _save_image_to_disk(self, rendered_data_wp: wp.array, env_idx: int):
-        """Save rendered image to disk.
-        
-        Args:
-            rendered_data_wp: Warp array containing RGBA data, shape (height, width, 4)
-            env_idx: Environment index for filename
-        """
-        try:
-            # Convert warp array to torch tensor, then to numpy
-            rendered_data_torch = wp.to_torch(rendered_data_wp)
-            rendered_data_np = rendered_data_torch.cpu().numpy()
-            
-            # Data is already uint8 from Newton renderer
-            if rendered_data_np.dtype not in [np.uint8]:
-                # Convert from float [0, 1] to uint8 [0, 255] if needed
-                if rendered_data_np.dtype in [np.float32, np.float64]:
-                    rendered_data_np = (rendered_data_np * 255).astype(np.uint8)
-            
-            # Create output directory if it doesn't exist
-            output_dir = Path("newton_rendered_images")
-            output_dir.mkdir(exist_ok=True)
-            
-            # Save as PNG
-            # rendered_data_np is shape (height, width, 4) for RGBA
-            if len(rendered_data_np.shape) == 3 and rendered_data_np.shape[2] == 4:
-                # RGBA image
-                image = Image.fromarray(rendered_data_np, mode='RGBA')
-            elif len(rendered_data_np.shape) == 3 and rendered_data_np.shape[2] == 3:
-                # RGB image
-                image = Image.fromarray(rendered_data_np, mode='RGB')
-            elif len(rendered_data_np.shape) == 2:
-                # Grayscale image
-                image = Image.fromarray(rendered_data_np, mode='L')
-            else:
-                print(f"Warning: Unexpected image shape {rendered_data_np.shape}, cannot save")
-                return
-            
-            # Save with frame and environment index in filename
-            output_path = output_dir / f"frame_{self._frame_counter:06d}_env_{env_idx:04d}.png"
-            image.save(output_path)
-            
-            # Only print for first environment and first few frames to avoid spam
-            if env_idx == 0 and self._frame_counter <= 5:
-                print(f"[Newton] Saved rendered image: {output_path}")
-                
-        except Exception as e:
-            print(f"Warning: Failed to save Newton image for env {env_idx}: {e}")
-    
-    def _save_tiled_image_to_disk(self):
-        """Save tiled image (all environments in a grid) to disk.
-        
-        This creates a single image with all environment views arranged in a grid.
-        """
-        try:
-            # Calculate tiled dimensions
-            tiled_height = self._num_tiles_per_side * self._height
-            tiled_width = self._num_tiles_per_side * self._width
-            
-            # Create tiled output buffer
-            tiled_buffer = wp.zeros(
-                (tiled_height, tiled_width, 4),
-                dtype=wp.uint8,
-                device=self._raw_output_rgb_buffer.device
-            )
-            
-            # Launch kernel to convert raw buffer to tiled format
-            wp.launch(
-                kernel=_convert_raw_rgb_tiled,
-                dim=(tiled_height, tiled_width),
-                inputs=[
-                    self._raw_output_rgb_buffer,
-                    tiled_buffer,
-                    self._width,
-                    self._height,
-                    self._num_tiles_per_side,
-                ],
-                device=self._raw_output_rgb_buffer.device,
-            )
-            
-            # Convert to numpy
-            tiled_data_torch = wp.to_torch(tiled_buffer)
-            tiled_data_np = tiled_data_torch.cpu().numpy()
-            
-            # Create output directory
-            output_dir = Path("newton_rendered_images")
-            output_dir.mkdir(exist_ok=True)
-            
-            # Save as PNG
-            image = Image.fromarray(tiled_data_np, mode='RGBA')
-            output_path = output_dir / f"frame_{self._frame_counter:06d}_tiled.png"
-            image.save(output_path)
-            
-            # Print only for first few frames
-            if self._frame_counter <= 5:
-                print(f"[Newton] Saved tiled image ({self._num_envs} envs in {self._num_tiles_per_side}x{self._num_tiles_per_side} grid): {output_path}")
-                
-        except Exception as e:
-            print(f"Warning: Failed to save Newton tiled image: {e}")
-            import traceback
-            traceback.print_exc()
 
     def step(self):
         """Step the renderer."""
