@@ -78,64 +78,74 @@ def _create_camera_transforms_kernel(
 
 
 @wp.kernel
-def _extract_tile_from_tiled_buffer_kernel(
+def _extract_all_tiles_from_tiled_buffer_kernel(
     tiled_buffer: wp.array(dtype=wp.uint8, ndim=3),  # type: ignore (tiled_height, tiled_width, 4)
-    tile_buffer: wp.array(dtype=wp.uint8, ndim=3),  # type: ignore (height, width, 4)
-    tile_x: int,
-    tile_y: int,
+    tile_buffers: wp.array(dtype=wp.uint8, ndim=4),  # type: ignore (num_envs, height, width, 4)
+    num_cols: int,
     tile_width: int,
     tile_height: int,
 ):
-    """Extract a single tile from a tiled buffer.
-    
+    """Extract all tiles from a tiled buffer in a single kernel invocation.
+
+    Uses a 3D dispatch (num_envs, height, width) so that each environment's tile
+    is extracted in parallel without launching one kernel per environment.
+
     Args:
         tiled_buffer: Input tiled buffer, shape (tiled_height, tiled_width, 4)
-        tile_buffer: Output buffer for single tile, shape (tile_height, tile_width, 4)
-        tile_x: Tile position in x (horizontal)
-        tile_y: Tile position in y (vertical)
+        tile_buffers: Output buffer for all tiles, shape (num_envs, tile_height, tile_width, 4)
+        num_cols: Number of tile columns in the tiled buffer grid
         tile_width: Width of each tile
         tile_height: Height of each tile
     """
-    y, x = wp.tid()
-    
+    env_idx, y, x = wp.tid()
+
+    # Compute tile position in the grid from environment index
+    tile_x = env_idx % num_cols
+    tile_y = env_idx // num_cols
+
     # Calculate source position in tiled buffer
     src_x = tile_x * tile_width + x
     src_y = tile_y * tile_height + y
-    
+
     # Copy RGBA channels
-    tile_buffer[y, x, 0] = tiled_buffer[src_y, src_x, 0]
-    tile_buffer[y, x, 1] = tiled_buffer[src_y, src_x, 1]
-    tile_buffer[y, x, 2] = tiled_buffer[src_y, src_x, 2]
-    tile_buffer[y, x, 3] = tiled_buffer[src_y, src_x, 3]
+    tile_buffers[env_idx, y, x, 0] = tiled_buffer[src_y, src_x, 0]
+    tile_buffers[env_idx, y, x, 1] = tiled_buffer[src_y, src_x, 1]
+    tile_buffers[env_idx, y, x, 2] = tiled_buffer[src_y, src_x, 2]
+    tile_buffers[env_idx, y, x, 3] = tiled_buffer[src_y, src_x, 3]
 
 
 @wp.kernel
-def _extract_depth_tile_from_tiled_buffer_kernel(
+def _extract_all_depth_tiles_from_tiled_buffer_kernel(
     tiled_buffer: wp.array(dtype=wp.float32, ndim=2),  # type: ignore (tiled_height, tiled_width)
-    tile_buffer: wp.array(dtype=wp.float32, ndim=3),  # type: ignore (height, width, 1)
-    tile_x: int,
-    tile_y: int,
+    tile_buffers: wp.array(dtype=wp.float32, ndim=4),  # type: ignore (num_envs, height, width, 1)
+    num_cols: int,
     tile_width: int,
     tile_height: int,
 ):
-    """Extract a single depth tile from a tiled depth buffer.
-    
+    """Extract all depth tiles from a tiled depth buffer in a single kernel invocation.
+
+    Uses a 3D dispatch (num_envs, height, width) so that each environment's tile
+    is extracted in parallel without launching one kernel per environment.
+
     Args:
         tiled_buffer: Input tiled depth buffer, shape (tiled_height, tiled_width)
-        tile_buffer: Output buffer for single tile, shape (tile_height, tile_width, 1)
-        tile_x: Tile position in x (horizontal)
-        tile_y: Tile position in y (vertical)
+        tile_buffers: Output buffer for all tiles, shape (num_envs, tile_height, tile_width, 1)
+        num_cols: Number of tile columns in the tiled buffer grid
         tile_width: Width of each tile
         tile_height: Height of each tile
     """
-    y, x = wp.tid()
-    
+    env_idx, y, x = wp.tid()
+
+    # Compute tile position in the grid from environment index
+    tile_x = env_idx % num_cols
+    tile_y = env_idx // num_cols
+
     # Calculate source position in tiled buffer
     src_x = tile_x * tile_width + x
     src_y = tile_y * tile_height + y
-    
+
     # Copy depth value
-    tile_buffer[y, x, 0] = tiled_buffer[src_y, src_x]
+    tile_buffers[env_idx, y, x, 0] = tiled_buffer[src_y, src_x]
 
 
 @wp.kernel
@@ -912,28 +922,22 @@ class OVRTXRenderer(RendererBase):
                                 # Save the full tiled image
                                 self._save_tiled_image_to_disk(tiled_data, suffix="rgb")
                                 
-                                # Extract individual tiles for each environment
+                                # Extract all tiles in a single kernel invocation
+                                wp.launch(
+                                    kernel=_extract_all_tiles_from_tiled_buffer_kernel,
+                                    dim=(self._num_envs, self._height, self._width),
+                                    inputs=[
+                                        tiled_data,
+                                        self._output_data_buffers["rgba"],
+                                        self._num_cols,
+                                        self._width,
+                                        self._height,
+                                    ],
+                                    device="cuda:0",
+                                )
+                                
+                                # Save individual images to disk
                                 for env_idx in range(self._num_envs):
-                                    # Calculate tile position in grid
-                                    tile_x = env_idx % self._num_cols
-                                    tile_y = env_idx // self._num_cols
-                                    
-                                    # Extract this tile using kernel
-                                    wp.launch(
-                                        kernel=_extract_tile_from_tiled_buffer_kernel,
-                                        dim=(self._height, self._width),
-                                        inputs=[
-                                            tiled_data,
-                                            self._output_data_buffers["rgba"][env_idx],
-                                            tile_x,
-                                            tile_y,
-                                            self._width,
-                                            self._height,
-                                        ],
-                                        device="cuda:0",
-                                    )
-                                    
-                                    # Save individual image
                                     self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx, suffix="rgb")
                         
                         # Extract depth if available
@@ -961,36 +965,29 @@ class OVRTXRenderer(RendererBase):
                                 # Save the full tiled depth image
                                 self._save_tiled_depth_image_to_disk(tiled_depth_data)
                                 
-                                # Extract individual tiles for each environment
-                                for env_idx in range(self._num_envs):
-                                    # Calculate tile position in grid
-                                    tile_x = env_idx % self._num_cols
-                                    tile_y = env_idx // self._num_cols
-                                    
-                                    # Extract depth tile using the depth-specific kernel
-                                    # Populate all requested depth-related buffers (they all use the same source data)
-                                    for depth_type in ["depth", "distance_to_image_plane", "distance_to_camera"]:
-                                        if depth_type in self._output_data_buffers:
-                                            wp.launch(
-                                                kernel=_extract_depth_tile_from_tiled_buffer_kernel,
-                                                dim=(self._height, self._width),
-                                                inputs=[
-                                                    tiled_depth_data,
-                                                    self._output_data_buffers[depth_type][env_idx],
-                                                    tile_x,
-                                                    tile_y,
-                                                    self._width,
-                                                    self._height,
-                                                ],
-                                                device="cuda:0",
-                                            )
-                                    
-                                    # Save depth image to disk for the first depth type available
-                                    if "depth" in self._output_data_buffers:
+                                # Extract all depth tiles in a single kernel invocation per depth type
+                                for depth_type in ["depth", "distance_to_image_plane", "distance_to_camera"]:
+                                    if depth_type in self._output_data_buffers:
+                                        wp.launch(
+                                            kernel=_extract_all_depth_tiles_from_tiled_buffer_kernel,
+                                            dim=(self._num_envs, self._height, self._width),
+                                            inputs=[
+                                                tiled_depth_data,
+                                                self._output_data_buffers[depth_type],
+                                                self._num_cols,
+                                                self._width,
+                                                self._height,
+                                            ],
+                                            device="cuda:0",
+                                        )
+                                
+                                # Save depth images to disk
+                                if "depth" in self._output_data_buffers:
+                                    for env_idx in range(self._num_envs):
                                         self._save_depth_image_to_disk(self._output_data_buffers["depth"][env_idx], env_idx)
-                                    
-                                    if env_idx == 0 and self._frame_counter <= 5:
-                                        print(f"[OVRTX] Extracted depth tile for env {env_idx}")
+                                
+                                if self._frame_counter <= 5:
+                                    print(f"[OVRTX] Extracted depth tiles for {self._num_envs} environments")
                         
                         # Extract albedo if available
                         if "DiffuseAlbedoSD" in frame.render_vars and "albedo" in self._output_data_buffers:
@@ -1001,30 +998,25 @@ class OVRTXRenderer(RendererBase):
                                 # Save the full tiled albedo image
                                 self._save_tiled_image_to_disk(tiled_albedo_data, suffix="albedo")
                                 
-                                # Extract individual tiles for each environment
+                                # Extract all albedo tiles in a single kernel invocation
+                                wp.launch(
+                                    kernel=_extract_all_tiles_from_tiled_buffer_kernel,
+                                    dim=(self._num_envs, self._height, self._width),
+                                    inputs=[
+                                        tiled_albedo_data,
+                                        self._output_data_buffers["albedo"],
+                                        self._num_cols,
+                                        self._width,
+                                        self._height,
+                                    ],
+                                    device="cuda:0",
+                                )
+                                
+                                if self._frame_counter <= 5:
+                                    print(f"[OVRTX] Extracted albedo tiles for {self._num_envs} environments")
+                                
+                                # Save individual albedo images to disk
                                 for env_idx in range(self._num_envs):
-                                    # Calculate tile position in grid
-                                    tile_x = env_idx % self._num_cols
-                                    tile_y = env_idx // self._num_cols
-                                    
-                                    # Extract this tile using kernel
-                                    wp.launch(
-                                        kernel=_extract_tile_from_tiled_buffer_kernel,
-                                        dim=(self._height, self._width),
-                                        inputs=[
-                                            tiled_albedo_data,
-                                            self._output_data_buffers["albedo"][env_idx],
-                                            tile_x,
-                                            tile_y,
-                                            self._width,
-                                            self._height,
-                                        ],
-                                        device="cuda:0",
-                                    )
-                                    
-                                    # Save individual albedo image
-                                    if env_idx == 0 and self._frame_counter <= 5:
-                                        print(f"[OVRTX] Extracted albedo tile for env {env_idx}")
                                     self._save_image_to_disk(self._output_data_buffers["albedo"][env_idx], env_idx, suffix="albedo")
                         
                         # Extract semantic segmentation if available
@@ -1060,30 +1052,25 @@ class OVRTXRenderer(RendererBase):
                                 # Save the full tiled semantic segmentation image
                                 self._save_tiled_image_to_disk(tiled_semantic_data, suffix="semantic")
                                 
-                                # Extract individual tiles for each environment
+                                # Extract all semantic tiles in a single kernel invocation
+                                wp.launch(
+                                    kernel=_extract_all_tiles_from_tiled_buffer_kernel,
+                                    dim=(self._num_envs, self._height, self._width),
+                                    inputs=[
+                                        tiled_semantic_data,
+                                        self._output_data_buffers["semantic_segmentation"],
+                                        self._num_cols,
+                                        self._width,
+                                        self._height,
+                                    ],
+                                    device="cuda:0",
+                                )
+                                
+                                if self._frame_counter <= 5:
+                                    print(f"[OVRTX] Extracted semantic segmentation tiles for {self._num_envs} environments")
+                                
+                                # Save individual semantic segmentation images to disk
                                 for env_idx in range(self._num_envs):
-                                    # Calculate tile position in grid
-                                    tile_x = env_idx % self._num_cols
-                                    tile_y = env_idx // self._num_cols
-                                    
-                                    # Extract this tile using kernel
-                                    wp.launch(
-                                        kernel=_extract_tile_from_tiled_buffer_kernel,
-                                        dim=(self._height, self._width),
-                                        inputs=[
-                                            tiled_semantic_data,
-                                            self._output_data_buffers["semantic_segmentation"][env_idx],
-                                            tile_x,
-                                            tile_y,
-                                            self._width,
-                                            self._height,
-                                        ],
-                                        device="cuda:0",
-                                    )
-                                    
-                                    # Save individual semantic segmentation image
-                                    if env_idx == 0 and self._frame_counter <= 5:
-                                        print(f"[OVRTX] Extracted semantic segmentation tile for env {env_idx}")
                                     self._save_image_to_disk(self._output_data_buffers["semantic_segmentation"][env_idx], env_idx, suffix="semantic")
 
         
