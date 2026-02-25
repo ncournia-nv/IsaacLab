@@ -194,8 +194,9 @@ class OVRTXRenderer(RendererBase):
         self._render_product_paths = []
         self._frame_counter = 0
 
-        # Deferred mapping state: store products from step() and map lazily in get_output()
-        self._pending_products = None  # RenderProductSetOutputs from last step()
+        # Deferred rendering state: step_async() fires the GPU work, wait() is deferred to get_output()
+        self._pending_result = None  # RendererResult from step_async() (not yet waited on)
+        self._pending_products = None  # RenderProductSetOutputs after wait()
         self._pending_product_path = None  # Product path for extraction
         self._mapped_render_vars = []  # RenderVarOutputs currently mapped (for deferred unmap)
         
@@ -882,24 +883,24 @@ class OVRTXRenderer(RendererBase):
         # Update object transforms from Newton physics
         self._update_object_transforms()
         
-        # Step the renderer to produce frames, but do NOT map the output buffers yet.
-        # Mapping is deferred to get_output() to avoid stalling the GPU pipeline.
+        # Kick off rendering asynchronously. The GPU work begins immediately but we
+        # defer wait() + buffer mapping to get_output() so CPU-side work (physics,
+        # action processing, etc.) can overlap with the raytracing.
         if self._renderer is not None and len(self._render_product_paths) > 0:
             try:
                 render_product_set = set(self._render_product_paths)
                 
-                products = self._renderer.step(
+                self._pending_result = self._renderer.step_async(
                     render_products=render_product_set, 
                     delta_time=1.0/60.0
                 )
-                
-                self._pending_products = products
                 self._pending_product_path = self._render_product_paths[0]
                 
             except Exception as e:
                 print(f"Warning: OVRTX rendering failed: {e}")
                 import traceback
                 traceback.print_exc()
+                self._pending_result = None
                 self._pending_products = None
                 self._pending_product_path = None
 
@@ -908,7 +909,16 @@ class OVRTXRenderer(RendererBase):
 
         Called at the start of render(), right before the next ovrtx step, so that
         the buffers are released back to the renderer before it begins new work.
+        If get_output() was never called, the pending async result is waited on
+        and destroyed here to avoid leaking C resources.
         """
+        if self._pending_result is not None:
+            try:
+                self._pending_products = self._pending_result.wait()
+            except Exception:
+                pass
+            self._pending_result = None
+
         for render_var in self._mapped_render_vars:
             try:
                 render_var.release()
@@ -1091,18 +1101,21 @@ class OVRTXRenderer(RendererBase):
     def get_output(self):
         """Return output data buffers, mapping render vars on first access.
 
-        The actual buffer mapping is deferred from render() to here so that
-        the GPU has maximum time to finish rendering before we stall on map().
-        Mapped render vars are kept alive and unmapped at the start of the
-        next render() call, right before the next ovrtx step.
+        Both the async wait and buffer mapping are deferred from render() to
+        here so that CPU-side work between render() and get_output() overlaps
+        with the GPU raytracing launched by step_async().
         """
-        if self._pending_products is not None:
+        if self._pending_result is not None:
             try:
+                self._pending_products = self._pending_result.wait()
+                self._pending_result = None
                 self._map_and_extract_render_outputs()
             except Exception as e:
                 print(f"Warning: OVRTX buffer extraction failed: {e}")
                 import traceback
                 traceback.print_exc()
+                self._pending_result = None
+                self._pending_products = None
         return self._output_data_buffers
 
     def _print_camera_transforms_debug(

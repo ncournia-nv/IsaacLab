@@ -82,6 +82,7 @@ class TiledCamera(Camera):
             RuntimeError: If Isaac Sim version < 4.2
             ValueError: If the provided data types are not supported by the camera.
         """
+        self._render_kicked = False
         super().__init__(cfg)
 
     def __del__(self):
@@ -110,6 +111,29 @@ class TiledCamera(Camera):
     """
     Operations
     """
+
+    def update(self, dt: float, force_recompute: bool = False):
+        if not self._is_initialized:
+            return
+        # Standard timestamp bookkeeping (mirrors base class)
+        self._timestamp += dt
+        self._is_outdated |= self._timestamp - self._timestamp_last_update + 1e-6 >= self.cfg.update_period
+
+        # Eagerly kick off async rendering for outdated sensors so that GPU
+        # raytracing overlaps with CPU work (rewards, terminations, etc.)
+        # until the results are actually consumed via the data property.
+        if not self._render_kicked:
+            outdated_env_ids = self._is_outdated.nonzero().squeeze(-1)
+            if len(outdated_env_ids) > 0:
+                self._frame[outdated_env_ids] += 1
+                if self.cfg.update_latest_camera_pose:
+                    self._update_poses(outdated_env_ids)
+                self._renderer.render(self._data.pos_w, self._data.quat_w_world, self._data.intrinsic_matrices)
+                self._render_kicked = True
+
+        # Handle eager buffer update path (force_recompute, visualization, history)
+        if force_recompute or self._is_visualizing or (self.cfg.history_length > 0):
+            self._update_outdated_buffers()
 
     def reset(self, env_ids: Sequence[int] | None = None, env_mask: wp.array | torch.Tensor | None = None):
         if not self._is_initialized:
@@ -318,16 +342,16 @@ class TiledCamera(Camera):
         self._create_buffers()
 
     def _update_buffers_impl(self, env_ids: Sequence[int]):
-        # Increment frame count
-        self._frame[env_ids] += 1
+        # If render wasn't eagerly kicked off in update(), do it now (fallback)
+        if not self._render_kicked:
+            self._frame[env_ids] += 1
+            if self.cfg.update_latest_camera_pose:
+                self._update_poses(env_ids)
+            self._renderer.render(self._data.pos_w, self._data.quat_w_world, self._data.intrinsic_matrices)
 
-        # update latest camera pose
-        if self.cfg.update_latest_camera_pose:
-            self._update_poses(env_ids)
+        self._render_kicked = False
 
-        # call render function of the renderer to update the output buffers
-        self._renderer.render(self._data.pos_w, self._data.quat_w_world, self._data.intrinsic_matrices)
-
+        # Block on the async render results and extract output buffers
         for data_type, output_buffer in self._renderer.get_output().items():
             self._data.output[data_type] = wp.to_torch(output_buffer)
 
