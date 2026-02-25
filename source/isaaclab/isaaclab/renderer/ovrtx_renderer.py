@@ -193,6 +193,11 @@ class OVRTXRenderer(RendererBase):
         self._usd_handles = []
         self._render_product_paths = []
         self._frame_counter = 0
+
+        # Deferred mapping state: store products from step() and map lazily in get_output()
+        self._pending_products = None  # RenderProductSetOutputs from last step()
+        self._pending_product_path = None  # Product path for extraction
+        self._mapped_render_vars = []  # RenderVarOutputs currently mapped (for deferred unmap)
         
         # Calculate tiled dimensions properly (not a square grid)
         # Use same logic as TiledCamera._tiling_grid_shape()
@@ -825,6 +830,9 @@ class OVRTXRenderer(RendererBase):
 
     def render(self, camera_positions: torch.Tensor, camera_orientations: torch.Tensor, intrinsic_matrices: torch.Tensor):
         """Render the scene using OVRTX.
+
+        Kicks off rendering but defers buffer mapping until get_output() is called
+        by the observation manager, avoiding a GPU stall immediately after step().
         
         Args:
             camera_positions: Tensor of shape (num_envs, 3) - camera positions in world frame
@@ -834,6 +842,9 @@ class OVRTXRenderer(RendererBase):
         # Scene should already be set up during initialize()
         if not self._initialized_scene:
             raise RuntimeError("Scene not initialized. This should not happen - scene setup should occur in initialize()")
+        
+        # Unmap render vars from the previous frame before starting a new step
+        self._unmap_deferred_render_vars()
         
         # Increment frame counter
         self._frame_counter += 1
@@ -866,219 +877,233 @@ class OVRTXRenderer(RendererBase):
         if self._camera_binding is not None:
             with self._camera_binding.map(device=Device.CUDA, device_id=0) as attr_mapping:
                 wp_transforms_view = wp.from_dlpack(attr_mapping.tensor, dtype=wp.mat44d)
-                
-                # Debug: Print transforms before and after update (first frame only)
-                # if self._frame_counter == 1:
-                #     self._print_camera_transforms_debug(
-                #         wp_transforms_view, 
-                #         camera_transforms, 
-                #         camera_positions, 
-                #         camera_orientations
-                #     )
-                
-                # Copy our computed transforms to the mapped buffer
                 wp.copy(wp_transforms_view, camera_transforms)
-                # Unmap will commit the changes
         
         # Update object transforms from Newton physics
         self._update_object_transforms()
         
-        # Step the renderer to produce frames
-        # We now have a single RenderProduct that references all cameras and outputs a tiled image
-        # print(f"[DEBUG] render_product_paths: {self._render_product_paths}")
+        # Step the renderer to produce frames, but do NOT map the output buffers yet.
+        # Mapping is deferred to get_output() to avoid stalling the GPU pipeline.
         if self._renderer is not None and len(self._render_product_paths) > 0:
             try:
-                # Render using the single render product
                 render_product_set = set(self._render_product_paths)
                 
                 products = self._renderer.step(
                     render_products=render_product_set, 
                     delta_time=1.0/60.0
                 )
-                # print(f"[DEBUG] Products: {products}")
                 
-                # Extract rendered images from the single render product
-                # The product should contain a single tiled frame
-                product_path = self._render_product_paths[0]
-                if product_path in products:
-                    product = products[product_path]
-                    
-                    if len(product.frames) > 0:
-                        frame = product.frames[0]
-                        # print(f"[DEBUG] Frame has {len(product.frames)} frame(s) render_vars: {frame.render_vars}")
-                        
-                        # Extract RGB/RGBA data from either LdrColor or SimpleShadingSD (depending on mode)
-                        rgb_render_var = None
-                        if "SimpleShadingSD" in frame.render_vars:
-                            rgb_render_var = "SimpleShadingSD"
-                        elif "LdrColor" in frame.render_vars:
-                            rgb_render_var = "LdrColor"
-                        
-                        if rgb_render_var and "rgba" in self._output_data_buffers:
-                            with frame.render_vars[rgb_render_var].map(device=Device.CUDA) as mapping:
-                                tiled_data = wp.from_dlpack(mapping.tensor)
-                                # print(f"[DEBUG] Tiled data shape: {tiled_data.shape} (from {rgb_render_var})")
-                                
-                                # Save the full tiled image
-                                self._save_tiled_image_to_disk(tiled_data, suffix="rgb")
-                                
-                                # Extract all tiles in a single kernel invocation
-                                wp.launch(
-                                    kernel=_extract_all_tiles_from_tiled_buffer_kernel,
-                                    dim=(self._num_envs, self._height, self._width),
-                                    inputs=[
-                                        tiled_data,
-                                        self._output_data_buffers["rgba"],
-                                        self._num_cols,
-                                        self._width,
-                                        self._height,
-                                    ],
-                                    device="cuda:0",
-                                )
-                                
-                                # Save individual images to disk
-                                for env_idx in range(self._num_envs):
-                                    self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx, suffix="rgb")
-                        
-                        # Extract depth if available
-                        # Check for depth render vars by their sourceName (DistanceToImagePlaneSD or DepthSD)
-                        depth_source_names = ["DistanceToImagePlaneSD", "DepthSD"]
-                        depth_var_found = None
-                        for source_name in depth_source_names:
-                            if source_name in frame.render_vars:
-                                depth_var_found = source_name
-                                break
-                        
-                        if depth_var_found:
-                            with frame.render_vars[depth_var_found].map(device=Device.CUDA) as mapping:
-                                tiled_depth_data = wp.from_dlpack(mapping.tensor)
-                                # print(f"[DEBUG] Tiled depth data ({depth_var_found}) shape: {tiled_depth_data.shape}, dtype: {tiled_depth_data.dtype}")
-                                
-                                # OVRTX returns depth as uint32, need to reinterpret as float32
-                                if tiled_depth_data.dtype == wp.uint32:
-                                    # Reinterpret uint32 bits as float32 via torch
-                                    depth_torch = wp.to_torch(tiled_depth_data)
-                                    depth_float_torch = depth_torch.view(torch.float32)
-                                    tiled_depth_data = wp.from_torch(depth_float_torch, dtype=wp.float32)
-                                    # print(f"[DEBUG] Converted depth data from uint32 to float32 (reinterpreted bits)")
-                                
-                                # Save the full tiled depth image
-                                self._save_tiled_depth_image_to_disk(tiled_depth_data)
-                                
-                                # Extract all depth tiles in a single kernel invocation per depth type
-                                for depth_type in ["depth", "distance_to_image_plane", "distance_to_camera"]:
-                                    if depth_type in self._output_data_buffers:
-                                        wp.launch(
-                                            kernel=_extract_all_depth_tiles_from_tiled_buffer_kernel,
-                                            dim=(self._num_envs, self._height, self._width),
-                                            inputs=[
-                                                tiled_depth_data,
-                                                self._output_data_buffers[depth_type],
-                                                self._num_cols,
-                                                self._width,
-                                                self._height,
-                                            ],
-                                            device="cuda:0",
-                                        )
-                                
-                                # Save depth images to disk
-                                if "depth" in self._output_data_buffers:
-                                    for env_idx in range(self._num_envs):
-                                        self._save_depth_image_to_disk(self._output_data_buffers["depth"][env_idx], env_idx)
-                                
-                                if self._frame_counter <= 5:
-                                    print(f"[OVRTX] Extracted depth tiles for {self._num_envs} environments")
-                        
-                        # Extract albedo if available
-                        if "DiffuseAlbedoSD" in frame.render_vars and "albedo" in self._output_data_buffers:
-                            with frame.render_vars["DiffuseAlbedoSD"].map(device=Device.CUDA) as mapping:
-                                tiled_albedo_data = wp.from_dlpack(mapping.tensor)
-                                # print(f"[DEBUG] Tiled albedo data shape: {tiled_albedo_data.shape}, dtype: {tiled_albedo_data.dtype}")
-                                
-                                # Save the full tiled albedo image
-                                self._save_tiled_image_to_disk(tiled_albedo_data, suffix="albedo")
-                                
-                                # Extract all albedo tiles in a single kernel invocation
-                                wp.launch(
-                                    kernel=_extract_all_tiles_from_tiled_buffer_kernel,
-                                    dim=(self._num_envs, self._height, self._width),
-                                    inputs=[
-                                        tiled_albedo_data,
-                                        self._output_data_buffers["albedo"],
-                                        self._num_cols,
-                                        self._width,
-                                        self._height,
-                                    ],
-                                    device="cuda:0",
-                                )
-                                
-                                if self._frame_counter <= 5:
-                                    print(f"[OVRTX] Extracted albedo tiles for {self._num_envs} environments")
-                                
-                                # Save individual albedo images to disk
-                                for env_idx in range(self._num_envs):
-                                    self._save_image_to_disk(self._output_data_buffers["albedo"][env_idx], env_idx, suffix="albedo")
-                        
-                        # Extract semantic segmentation if available
-                        if "SemanticSegmentationSD" in frame.render_vars and "semantic_segmentation" in self._output_data_buffers:
-                            with frame.render_vars["SemanticSegmentationSD"].map(device=Device.CUDA) as mapping:
-                                tiled_semantic_data = wp.from_dlpack(mapping.tensor)
-                                # print(f"[DEBUG] Tiled semantic segmentation data shape: {tiled_semantic_data.shape}, dtype: {tiled_semantic_data.dtype}")
-                                
-                                # Handle different data formats for semantic segmentation
-                                # OVRTX may return uint32 (packed RGBA) or uint8 (direct RGBA)
-                                if tiled_semantic_data.dtype == wp.uint32:
-                                    # Data is in uint32 format (packed RGBA), need to convert to uint8 RGBA
-                                    # print(f"[DEBUG] Converting semantic segmentation from uint32 to uint8 RGBA")
-                                    
-                                    # Convert to torch, view as uint8, reshape to RGBA
-                                    semantic_torch = wp.to_torch(tiled_semantic_data)
-                                    # Each uint32 contains 4 bytes (RGBA), reinterpret as uint8
-                                    semantic_uint8_torch = semantic_torch.view(torch.uint8)
-                                    
-                                    # Reshape to (height, width, 4) for RGBA
-                                    if len(semantic_torch.shape) == 2:
-                                        # Shape is (H, W) in uint32, becomes (H, W*4) in uint8
-                                        h, w = semantic_torch.shape
-                                        semantic_uint8_torch = semantic_uint8_torch.reshape(h, w, 4)
-                                    
-                                    # Convert back to warp array
-                                    tiled_semantic_data = wp.from_torch(semantic_uint8_torch, dtype=wp.uint8)
-                                    # print(f"[DEBUG] Converted semantic segmentation shape: {tiled_semantic_data.shape}")
-                                elif len(tiled_semantic_data.shape) == 2:
-                                    # Data is 2D but uint8, need to expand to RGBA
-                                    pass  # print(f"[DEBUG] WARNING: Semantic segmentation is 2D uint8, may need special handling")
-                                
-                                # Save the full tiled semantic segmentation image
-                                self._save_tiled_image_to_disk(tiled_semantic_data, suffix="semantic")
-                                
-                                # Extract all semantic tiles in a single kernel invocation
-                                wp.launch(
-                                    kernel=_extract_all_tiles_from_tiled_buffer_kernel,
-                                    dim=(self._num_envs, self._height, self._width),
-                                    inputs=[
-                                        tiled_semantic_data,
-                                        self._output_data_buffers["semantic_segmentation"],
-                                        self._num_cols,
-                                        self._width,
-                                        self._height,
-                                    ],
-                                    device="cuda:0",
-                                )
-                                
-                                if self._frame_counter <= 5:
-                                    print(f"[OVRTX] Extracted semantic segmentation tiles for {self._num_envs} environments")
-                                
-                                # Save individual semantic segmentation images to disk
-                                for env_idx in range(self._num_envs):
-                                    self._save_image_to_disk(self._output_data_buffers["semantic_segmentation"][env_idx], env_idx, suffix="semantic")
-
-        
+                self._pending_products = products
+                self._pending_product_path = self._render_product_paths[0]
+                
             except Exception as e:
                 print(f"Warning: OVRTX rendering failed: {e}")
                 import traceback
                 traceback.print_exc()
-                # Keep the output buffers as-is (zeros from initialization)
+                self._pending_products = None
+                self._pending_product_path = None
+
+    def _unmap_deferred_render_vars(self):
+        """Unmap render vars that were mapped during a previous get_output() call.
+
+        Called at the start of render(), right before the next ovrtx step, so that
+        the buffers are released back to the renderer before it begins new work.
+        """
+        for render_var in self._mapped_render_vars:
+            try:
+                render_var.release()
+            except Exception:
+                pass
+        self._mapped_render_vars.clear()
+
+        if self._pending_products is not None:
+            try:
+                self._pending_products.destroy()
+            except Exception:
+                pass
+            self._pending_products = None
+            self._pending_product_path = None
+
+    def _map_and_extract_render_outputs(self):
+        """Map render var buffers and extract tile data into output buffers.
+
+        Called lazily from get_output() so the GPU has time to finish rendering
+        before we force a sync by mapping the output buffers.
+        """
+        products = self._pending_products
+        product_path = self._pending_product_path
+        if products is None or product_path is None:
+            return
+
+        if product_path not in products:
+            return
+
+        product = products[product_path]
+        if len(product.frames) == 0:
+            return
+
+        frame = product.frames[0]
+
+        # --- RGB / RGBA ---
+        rgb_render_var_name = None
+        if "SimpleShadingSD" in frame.render_vars:
+            rgb_render_var_name = "SimpleShadingSD"
+        elif "LdrColor" in frame.render_vars:
+            rgb_render_var_name = "LdrColor"
+
+        if rgb_render_var_name and "rgba" in self._output_data_buffers:
+            render_var = frame.render_vars[rgb_render_var_name]
+            mapped = render_var.map(device=Device.CUDA)
+            mapped.__enter__()
+            self._mapped_render_vars.append(render_var)
+
+            tiled_data = wp.from_dlpack(mapped.tensor)
+            self._save_tiled_image_to_disk(tiled_data, suffix="rgb")
+
+            wp.launch(
+                kernel=_extract_all_tiles_from_tiled_buffer_kernel,
+                dim=(self._num_envs, self._height, self._width),
+                inputs=[
+                    tiled_data,
+                    self._output_data_buffers["rgba"],
+                    self._num_cols,
+                    self._width,
+                    self._height,
+                ],
+                device="cuda:0",
+            )
+
+            for env_idx in range(self._num_envs):
+                self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx, suffix="rgb")
+
+        # --- Depth ---
+        depth_source_names = ["DistanceToImagePlaneSD", "DepthSD"]
+        depth_var_found = None
+        for source_name in depth_source_names:
+            if source_name in frame.render_vars:
+                depth_var_found = source_name
+                break
+
+        if depth_var_found:
+            render_var = frame.render_vars[depth_var_found]
+            mapped = render_var.map(device=Device.CUDA)
+            mapped.__enter__()
+            self._mapped_render_vars.append(render_var)
+
+            tiled_depth_data = wp.from_dlpack(mapped.tensor)
+
+            if tiled_depth_data.dtype == wp.uint32:
+                depth_torch = wp.to_torch(tiled_depth_data)
+                depth_float_torch = depth_torch.view(torch.float32)
+                tiled_depth_data = wp.from_torch(depth_float_torch, dtype=wp.float32)
+
+            self._save_tiled_depth_image_to_disk(tiled_depth_data)
+
+            for depth_type in ["depth", "distance_to_image_plane", "distance_to_camera"]:
+                if depth_type in self._output_data_buffers:
+                    wp.launch(
+                        kernel=_extract_all_depth_tiles_from_tiled_buffer_kernel,
+                        dim=(self._num_envs, self._height, self._width),
+                        inputs=[
+                            tiled_depth_data,
+                            self._output_data_buffers[depth_type],
+                            self._num_cols,
+                            self._width,
+                            self._height,
+                        ],
+                        device="cuda:0",
+                    )
+
+            if "depth" in self._output_data_buffers:
+                for env_idx in range(self._num_envs):
+                    self._save_depth_image_to_disk(self._output_data_buffers["depth"][env_idx], env_idx)
+
+            if self._frame_counter <= 5:
+                print(f"[OVRTX] Extracted depth tiles for {self._num_envs} environments")
+
+        # --- Albedo ---
+        if "DiffuseAlbedoSD" in frame.render_vars and "albedo" in self._output_data_buffers:
+            render_var = frame.render_vars["DiffuseAlbedoSD"]
+            mapped = render_var.map(device=Device.CUDA)
+            mapped.__enter__()
+            self._mapped_render_vars.append(render_var)
+
+            tiled_albedo_data = wp.from_dlpack(mapped.tensor)
+            self._save_tiled_image_to_disk(tiled_albedo_data, suffix="albedo")
+
+            wp.launch(
+                kernel=_extract_all_tiles_from_tiled_buffer_kernel,
+                dim=(self._num_envs, self._height, self._width),
+                inputs=[
+                    tiled_albedo_data,
+                    self._output_data_buffers["albedo"],
+                    self._num_cols,
+                    self._width,
+                    self._height,
+                ],
+                device="cuda:0",
+            )
+
+            if self._frame_counter <= 5:
+                print(f"[OVRTX] Extracted albedo tiles for {self._num_envs} environments")
+
+            for env_idx in range(self._num_envs):
+                self._save_image_to_disk(self._output_data_buffers["albedo"][env_idx], env_idx, suffix="albedo")
+
+        # --- Semantic segmentation ---
+        if "SemanticSegmentationSD" in frame.render_vars and "semantic_segmentation" in self._output_data_buffers:
+            render_var = frame.render_vars["SemanticSegmentationSD"]
+            mapped = render_var.map(device=Device.CUDA)
+            mapped.__enter__()
+            self._mapped_render_vars.append(render_var)
+
+            tiled_semantic_data = wp.from_dlpack(mapped.tensor)
+
+            if tiled_semantic_data.dtype == wp.uint32:
+                semantic_torch = wp.to_torch(tiled_semantic_data)
+                semantic_uint8_torch = semantic_torch.view(torch.uint8)
+                if len(semantic_torch.shape) == 2:
+                    h, w = semantic_torch.shape
+                    semantic_uint8_torch = semantic_uint8_torch.reshape(h, w, 4)
+                tiled_semantic_data = wp.from_torch(semantic_uint8_torch, dtype=wp.uint8)
+
+            self._save_tiled_image_to_disk(tiled_semantic_data, suffix="semantic")
+
+            wp.launch(
+                kernel=_extract_all_tiles_from_tiled_buffer_kernel,
+                dim=(self._num_envs, self._height, self._width),
+                inputs=[
+                    tiled_semantic_data,
+                    self._output_data_buffers["semantic_segmentation"],
+                    self._num_cols,
+                    self._width,
+                    self._height,
+                ],
+                device="cuda:0",
+            )
+
+            if self._frame_counter <= 5:
+                print(f"[OVRTX] Extracted semantic segmentation tiles for {self._num_envs} environments")
+
+            for env_idx in range(self._num_envs):
+                self._save_image_to_disk(self._output_data_buffers["semantic_segmentation"][env_idx], env_idx, suffix="semantic")
+
+    def get_output(self):
+        """Return output data buffers, mapping render vars on first access.
+
+        The actual buffer mapping is deferred from render() to here so that
+        the GPU has maximum time to finish rendering before we stall on map().
+        Mapped render vars are kept alive and unmapped at the start of the
+        next render() call, right before the next ovrtx step.
+        """
+        if self._pending_products is not None:
+            try:
+                self._map_and_extract_render_outputs()
+            except Exception as e:
+                print(f"Warning: OVRTX buffer extraction failed: {e}")
+                import traceback
+                traceback.print_exc()
+        return self._output_data_buffers
 
     def _print_camera_transforms_debug(
         self, 
@@ -1387,6 +1412,8 @@ class OVRTXRenderer(RendererBase):
 
     def close(self):
         """Close the renderer and release resources."""
+        self._unmap_deferred_render_vars()
+
         if self._camera_binding:
             try:
                 self._camera_binding.unbind()
