@@ -543,7 +543,9 @@ class OVRTXRenderer(RendererBase):
         rel camera = [{camera_rel_list}]
         token omni:rtx:background:source:type = "domeLight"
         token omni:rtx:rendermode = "RealTimePathTracing"
-        token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
+        uniform int omni:rtx:quality = 0
+        // token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
+        token[] omni:rtx:waitForEvents = [ ]
         rel orderedVars = <{render_var_path}>
         uniform int2 resolution = ({self._tiled_width}, {self._tiled_height})
     }}
