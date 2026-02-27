@@ -39,7 +39,7 @@ class KukaAllegroSingleTiledCameraSceneCfg(kuka_allegro_dexsuite.KukaAllegroScen
         height=MISSING,
         #renderer_type="newton_warp",
         renderer_type="ov_rtx", 
-        update_latest_camera_pose=True,
+        update_latest_camera_pose=False,
     )
 
     def __post_init__(self):

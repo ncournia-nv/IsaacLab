@@ -398,6 +398,7 @@ class OVRTXRenderer(RendererBase):
         OVRTX_CONFIG = RendererConfig(
             log_file_path="/tmp/ovrtx_renderer.log",
             log_level="warning",
+            read_gpu_transforms=True
         )
         self._renderer = Renderer(OVRTX_CONFIG)
         assert self._renderer, "Renderer should be valid after creation"
@@ -970,7 +971,7 @@ class OVRTXRenderer(RendererBase):
             self._mapped_render_vars.append(render_var)
 
             tiled_data = wp.from_dlpack(mapped.tensor)
-            self._save_tiled_image_to_disk(tiled_data, suffix="rgb")
+            #self._save_tiled_image_to_disk(tiled_data, suffix="rgb")
 
             wp.launch(
                 kernel=_extract_all_tiles_from_tiled_buffer_kernel,
@@ -985,8 +986,8 @@ class OVRTXRenderer(RendererBase):
                 device="cuda:0",
             )
 
-            for env_idx in range(self._num_envs):
-                self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx, suffix="rgb")
+            #for env_idx in range(self._num_envs):
+            #    self._save_image_to_disk(self._output_data_buffers["rgba"][env_idx], env_idx, suffix="rgb")
 
         # --- Depth ---
         depth_source_names = ["DistanceToImagePlaneSD", "DepthSD"]
@@ -1422,8 +1423,9 @@ class OVRTXRenderer(RendererBase):
 
     def reset(self):
         """Reset the renderer."""
-        if self._renderer:
-            self._renderer.reset(time=0.0)
+        #if self._renderer:
+        #    self._renderer.reset(time=0.0)
+        pass
 
     def close(self):
         """Close the renderer and release resources."""
