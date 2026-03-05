@@ -42,9 +42,11 @@ def build_render_scope_usd(
     source_name: str,
     tiled_width: int,
     tiled_height: int,
+    simple_shading_mode: bool = True,
 ) -> str:
     """Build the Render scope USD string (def Scope Render, RenderProduct, Vars)."""
     camera_rel_list = ", ".join([f"<{p}>" for p in camera_paths])
+    render_mode = "Minimal" if simple_shading_mode else "RealTimePathTracing"
     return f'''
 def Scope "Render"
 {{
@@ -53,7 +55,7 @@ def Scope "Render"
     ) {{
         rel camera = [{camera_rel_list}]
         token omni:rtx:background:source:type = "domeLight"
-        token omni:rtx:rendermode = "RealTimePathTracing"
+        token omni:rtx:rendermode = "{render_mode}"
         token[] omni:rtx:waitForEvents = ["AllLoadingFinished", "OnlyOnFirstRequest"]
         rel orderedVars = <{render_var_path}>
         uniform int2 resolution = ({tiled_width}, {tiled_height})
@@ -123,6 +125,7 @@ def inject_cameras_into_usd(
         source_name,
         tiled_width,
         tiled_height,
+        simple_shading_mode=cfg.simple_shading_mode,
     )
     combined_usd = original_usd.rstrip() + "\n\n" + camera_content
 
