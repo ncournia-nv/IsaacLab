@@ -55,38 +55,40 @@ def create_camera_transforms_kernel(
 
 
 @wp.kernel
-def extract_tile_from_tiled_buffer_kernel(
-    tiled_buffer: wp.array(dtype=wp.uint8, ndim=3),  # type: ignore
-    tile_buffer: wp.array(dtype=wp.uint8, ndim=3),  # type: ignore
-    tile_x: int,
-    tile_y: int,
+def extract_all_rgba_tiles_kernel(
+    tiled_buffer: wp.array(dtype=wp.uint8, ndim=3),  # type: ignore  (tiled_H, tiled_W, 4)
+    output: wp.array(dtype=wp.uint8, ndim=4),  # type: ignore  (num_envs, H, W, 4)
+    num_cols: int,
     tile_width: int,
     tile_height: int,
 ):
-    """Extract one RGBA tile from a tiled buffer."""
-    y, x = wp.tid()
+    """Extract all RGBA tiles from a tiled buffer in a single kernel launch."""
+    env_idx, y, x = wp.tid()
+    tile_x = env_idx % num_cols
+    tile_y = env_idx // num_cols
     src_x = tile_x * tile_width + x
     src_y = tile_y * tile_height + y
-    tile_buffer[y, x, 0] = tiled_buffer[src_y, src_x, 0]
-    tile_buffer[y, x, 1] = tiled_buffer[src_y, src_x, 1]
-    tile_buffer[y, x, 2] = tiled_buffer[src_y, src_x, 2]
-    tile_buffer[y, x, 3] = tiled_buffer[src_y, src_x, 3]
+    output[env_idx, y, x, 0] = tiled_buffer[src_y, src_x, 0]
+    output[env_idx, y, x, 1] = tiled_buffer[src_y, src_x, 1]
+    output[env_idx, y, x, 2] = tiled_buffer[src_y, src_x, 2]
+    output[env_idx, y, x, 3] = tiled_buffer[src_y, src_x, 3]
 
 
 @wp.kernel
-def extract_depth_tile_from_tiled_buffer_kernel(
-    tiled_buffer: wp.array(dtype=wp.float32, ndim=2),  # type: ignore
-    tile_buffer: wp.array(dtype=wp.float32, ndim=3),  # type: ignore
-    tile_x: int,
-    tile_y: int,
+def extract_all_depth_tiles_kernel(
+    tiled_buffer: wp.array(dtype=wp.float32, ndim=2),  # type: ignore  (tiled_H, tiled_W)
+    output: wp.array(dtype=wp.float32, ndim=4),  # type: ignore  (num_envs, H, W, 1)
+    num_cols: int,
     tile_width: int,
     tile_height: int,
 ):
-    """Extract one depth tile from a tiled depth buffer."""
-    y, x = wp.tid()
+    """Extract all depth tiles from a tiled depth buffer in a single kernel launch."""
+    env_idx, y, x = wp.tid()
+    tile_x = env_idx % num_cols
+    tile_y = env_idx // num_cols
     src_x = tile_x * tile_width + x
     src_y = tile_y * tile_height + y
-    tile_buffer[y, x, 0] = tiled_buffer[src_y, src_x]
+    output[env_idx, y, x, 0] = tiled_buffer[src_y, src_x]
 
 
 @wp.kernel
