@@ -161,7 +161,7 @@ class OVRTXRenderer(BaseRenderer):
         OVRTX_CONFIG = RendererConfig(
             log_file_path=self.cfg.log_file_path,
             log_level=self.cfg.log_level,
-            read_gpu_transforms=False,
+            read_gpu_transforms=True,
         )
         self._renderer = Renderer(OVRTX_CONFIG)
         assert self._renderer, "Renderer should be valid after creation"
