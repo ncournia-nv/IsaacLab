@@ -1,6 +1,19 @@
 Changelog
 ---------
 
+4.6.2 (2026-04-16)
+~~~~~~~~~~~~~~~~~~
+
+Added
+^^^^^
+
+* Added ``ovsensors`` entry to :data:`~isaaclab.renderers.renderer._RENDERER_TYPE_TO_BACKEND`
+  and :class:`~isaaclab.renderers.Renderer._backend_class_names` so that
+  ``Renderer(cfg)`` with ``cfg.renderer_type="ovsensors"`` dynamically loads
+  :class:`~isaaclab_ovsensors.renderers.OvsensorsRenderer` from the
+  ``isaaclab_ovsensors`` package.
+
+
 4.6.1 (2026-04-14)
 ~~~~~~~~~~~~~~~~~~
 
