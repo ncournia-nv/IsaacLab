@@ -22,6 +22,13 @@ import sys
 
 import numpy as np
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    cp = None
+    _HAS_CUPY = False
+
 # Make ovsensors importable when running outside the installed environment.
 _ovsensors_python = "/home/horde/ovsensors/ovsensors/python"
 if _ovsensors_python not in sys.path:
@@ -157,40 +164,58 @@ class OvsensorsCamera:
             Dictionary with keys ``"LdrColor"`` (shape ``(N, H, W, 4)``, uint8)
             and ``"Depth"`` (shape ``(N, H, W, 1)``, float32).
         """
+        from ovsensors import Device
+
         outputs = self._ctx.step_sync(self._sensor_handles, delta_time=delta_time)
-        color_frames: list[np.ndarray] = []
-        depth_frames: list[np.ndarray] = []
+        color_frames = []
+        depth_frames = []
 
         for sensor_out in outputs:
             try:
-                with sensor_out.map("LdrColor") as m:
-                    color_frames.append(m.tensor.numpy())
+                with sensor_out.map("LdrColor", device=Device.CUDA) as m:
+                    t = m.tensor
+                    if _HAS_CUPY and t.device.device_type.value == 2:  # kDLCUDA
+                        color_frames.append(cp.from_dlpack(t))
+                    else:
+                        color_frames.append(np.from_dlpack(t).copy())
             except Exception:
+                _zero = (cp.zeros if _HAS_CUPY else np.zeros)
                 color_frames.append(
-                    np.zeros((self._height, self._width, 4), dtype=np.uint8)
+                    _zero((self._height, self._width, 4), dtype=(cp.uint8 if _HAS_CUPY else np.uint8))
                 )
             try:
-                with sensor_out.map("Depth") as m:
-                    depth_frames.append(m.tensor.numpy())
+                with sensor_out.map("Depth", device=Device.CUDA) as m:
+                    t = m.tensor
+                    if _HAS_CUPY and t.device.device_type.value == 2:  # kDLCUDA
+                        depth_frames.append(cp.from_dlpack(t))
+                    else:
+                        depth_frames.append(np.from_dlpack(t).copy())
             except Exception:
+                _zero = (cp.zeros if _HAS_CUPY else np.zeros)
                 depth_frames.append(
-                    np.zeros((self._height, self._width, 1), dtype=np.float32)
+                    _zero((self._height, self._width, 1), dtype=(cp.float32 if _HAS_CUPY else np.float32))
                 )
 
         outputs.destroy()
 
         n = self._num_envs
+
+        def _stack_frames(frames, shape, dtype_gpu, dtype_cpu):
+            if not frames:
+                if _HAS_CUPY:
+                    return cp.zeros((n, *shape), dtype=dtype_gpu)
+                return np.zeros((n, *shape), dtype=dtype_cpu)
+            if _HAS_CUPY and isinstance(frames[0], cp.ndarray):
+                return cp.stack(frames)
+            return np.stack([np.asarray(f) for f in frames])
+
         return {
-            "LdrColor": (
-                np.stack(color_frames)
-                if color_frames
-                else np.zeros((n, self._height, self._width, 4), dtype=np.uint8)
-            ),
-            "Depth": (
-                np.stack(depth_frames)
-                if depth_frames
-                else np.zeros((n, self._height, self._width, 1), dtype=np.float32)
-            ),
+            "LdrColor": _stack_frames(color_frames,
+                                       (self._height, self._width, 4),
+                                       cp.uint8 if _HAS_CUPY else None, np.uint8),
+            "Depth": _stack_frames(depth_frames,
+                                   (self._height, self._width, 1),
+                                   cp.float32 if _HAS_CUPY else None, np.float32),
         }
 
     def reset_environment(self, env_handle: int) -> None:

@@ -17,6 +17,13 @@ from typing import Any
 
 import numpy as np
 
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    cp = None
+    _HAS_CUPY = False
+
 # Make ovsensors importable when running outside the installed environment.
 _ovsensors_python = "/home/horde/ovsensors/ovsensors/python"
 if _ovsensors_python not in sys.path:
@@ -265,8 +272,15 @@ class OvsensorsRenderer(BaseRenderer):
         if outputs is None:
             return
 
-        rgb_frames: list[np.ndarray] = []
-        depth_frames: list[np.ndarray] = []
+        from ovsensors import Device
+
+        rgb_frames = []
+        depth_frames = []
+
+        def _map_to_array(tensor):
+            if _HAS_CUPY and tensor.device.device_type.value == 2:  # kDLCUDA
+                return cp.from_dlpack(tensor)
+            return np.from_dlpack(tensor).copy()
 
         for sensor_out in outputs:
             if not sensor_out.metadata.is_fresh:
@@ -274,39 +288,45 @@ class OvsensorsRenderer(BaseRenderer):
                 depth_frames.append(np.zeros((self._height, self._width, 1), dtype=np.float32))
                 continue
 
-            # LdrColor -> "rgb" output (via DLPack — zero-copy on CUDA).
+            # LdrColor -> "rgb" output via GPU path (Device.CUDA — zero-copy on CUDA backends).
             try:
-                with sensor_out.map("LdrColor") as m:
-                    rgb_frames.append(m.tensor.numpy())
+                with sensor_out.map("LdrColor", device=Device.CUDA) as m:
+                    rgb_frames.append(_map_to_array(m.tensor))
             except Exception:
                 rgb_frames.append(np.zeros((self._height, self._width, 4), dtype=np.uint8))
 
-            # Depth output.
+            # Depth output via GPU path.
             try:
-                with sensor_out.map("Depth") as m:
-                    depth_frames.append(m.tensor.numpy())
+                with sensor_out.map("Depth", device=Device.CUDA) as m:
+                    depth_frames.append(_map_to_array(m.tensor))
             except Exception:
                 depth_frames.append(np.zeros((self._height, self._width, 1), dtype=np.float32))
 
+        def _stack_frames(frames):
+            if not frames:
+                return None
+            if _HAS_CUPY and any(hasattr(f, "device") for f in frames):
+                return cp.stack([cp.asarray(f) for f in frames])
+            return np.stack([np.asarray(f) for f in frames])
+
         # Write into pre-allocated output_tensors when present.
         if rgb_frames and "rgb" in render_data.output_tensors:
-            rgb_stack = np.stack(rgb_frames)
+            rgb_stack = _stack_frames(rgb_frames)
             out = render_data.output_tensors["rgb"]
             if hasattr(out, "copy_"):
-                # torch.Tensor path
                 import torch
-
-                out.copy_(torch.from_numpy(rgb_stack))
+                cpu = rgb_stack.get() if hasattr(rgb_stack, "get") else np.asarray(rgb_stack)
+                out.copy_(torch.from_numpy(cpu))
             else:
                 render_data.output_tensors["rgb"] = rgb_stack
 
         if depth_frames and "depth" in render_data.output_tensors:
-            d_stack = np.stack(depth_frames)
+            d_stack = _stack_frames(depth_frames)
             out = render_data.output_tensors["depth"]
             if hasattr(out, "copy_"):
                 import torch
-
-                out.copy_(torch.from_numpy(d_stack))
+                cpu = d_stack.get() if hasattr(d_stack, "get") else np.asarray(d_stack)
+                out.copy_(torch.from_numpy(cpu))
             else:
                 render_data.output_tensors["depth"] = d_stack
 
@@ -314,9 +334,9 @@ class OvsensorsRenderer(BaseRenderer):
         output_dict = getattr(camera_data, "output", None)
         if output_dict is not None:
             if rgb_frames:
-                output_dict["rgb"] = np.stack(rgb_frames)
+                output_dict["rgb"] = _stack_frames(rgb_frames)
             if depth_frames:
-                output_dict["depth"] = np.stack(depth_frames)
+                output_dict["depth"] = _stack_frames(depth_frames)
 
     def cleanup(self, render_data: OvsensorsRenderData) -> None:
         """Destroy sensor handles and release resources.
